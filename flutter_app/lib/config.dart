@@ -1,7 +1,10 @@
-// Replace with your backend computer's LAN IP address when running on a physical device!
-// (This machine's current LAN IP — update if it changes; check with `ipconfig`.)
-// This is the LOCAL face-recognition backend only (biometric match / enroll / link).
-const String kBackendUrl = 'http://10.186.247.215:8000/api';
+// Face-recognition backend (biometric match / enroll / link / cross-user verify).
+// LOCAL DEV (current): the backend runs on this machine; use its LAN IP. Update if
+// the IP changes (`ipconfig`). Phone must be on the same Wi-Fi.
+const String kBackendUrl = 'http://192.168.0.26:8000/api';
+
+// AFTER the server deploy, switch to the same-domain path (no LAN IP, stable HTTPS):
+// const String kBackendUrl = 'https://ehrms.askeva.net/face/api';
 
 // The EHRMS backend the app punches/breaks against DIRECTLY (single source of truth).
 // ALWAYS the DEV server (ehrms.askeva.net = EHRMS's development host) — never the
