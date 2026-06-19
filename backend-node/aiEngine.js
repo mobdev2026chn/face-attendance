@@ -1,5 +1,33 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+
+// Resolve a usable Python interpreter across OSes. Order:
+//   1. PYTHON_BIN from .env — but only if it actually exists on disk, so a stale
+//      Windows path copied to a Linux server (or vice-versa) is skipped, not fatal.
+//   2. The project venv, with the platform-correct layout (bin/python on POSIX,
+//      Scripts\python.exe on Windows).
+//   3. python3 / python on PATH as a last resort.
+// On Windows, bare "python" often resolves to the Microsoft Store alias stub
+// (exit code 9009), so the explicit venv path is preferred there.
+function resolvePythonBin() {
+  const candidates = [];
+  if (process.env.PYTHON_BIN) candidates.push(process.env.PYTHON_BIN);
+  const venv = path.join(__dirname, '..', 'backend', 'venv');
+  candidates.push(
+    process.platform === 'win32'
+      ? path.join(venv, 'Scripts', 'python.exe')
+      : path.join(venv, 'bin', 'python'),
+  );
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch (_) {
+      /* ignore and try the next candidate */
+    }
+  }
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
 
 let pyProcess = null;
 let currentResolve = null;
@@ -10,11 +38,8 @@ let processing = false;
 
 function initPyProcess() {
   const scriptPath = path.join(__dirname, 'extract_face_worker.py');
-  // Resolve a real Python interpreter. On Windows, bare "python" often resolves to
-  // the Microsoft Store alias stub (exit code 9009), so prefer an explicit path.
   // Override with PYTHON_BIN in .env if your interpreter lives elsewhere.
-  const pythonBin = process.env.PYTHON_BIN
-    || path.join(__dirname, '..', 'backend', 'venv', 'Scripts', 'python.exe');
+  const pythonBin = resolvePythonBin();
   console.log(`[INFO] Spawning persistent Python AI Engine Worker using: ${pythonBin}`);
   // Cap BLAS/OpenMP thread pools to 1. numpy's bundled OpenBLAS otherwise tries to
   // allocate per-core buffers and crashes ("Memory allocation still failed after 10
@@ -56,6 +81,19 @@ function initPyProcess() {
 
   pyProcess.stderr.on('data', (data) => {
     console.error(`[AI ENGINE WORKER ERROR] ${data.toString().trim()}`);
+  });
+
+  pyProcess.on('error', (err) => {
+    // e.g. ENOENT when the interpreter path is wrong. Without this listener Node
+    // re-throws the error and takes the whole backend down.
+    console.error(`[ERROR] Failed to spawn Python AI Engine Worker (${pythonBin}): ${err.message}`);
+    pyProcess = null;
+    if (currentReject) {
+      currentReject(err);
+      currentResolve = null;
+      currentReject = null;
+    }
+    processing = false;
   });
 
   pyProcess.on('close', (code) => {
