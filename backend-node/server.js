@@ -412,9 +412,10 @@ const JWT_SECRET = process.env.JWT_SECRET || 'faceattend-super-secret-key-1234';
 const allowedOrigins = [
   'https://app.ektahr.com',
   'https://my.ektahr.com',
-  'https://ehrms.askeva.net',
-  'http://ehrms.askeva.net',
+  'https://eface.askeva.net',
+  'http://eface.askeva.net',
   'https://hrms.askeva.net',
+  'https://eface.askeva.io',
   'http://localhost:8080',
   'http://127.0.0.1:8080',
   ...(process.env.ALLOWED_ORIGINS
