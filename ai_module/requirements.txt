@@ -1,0 +1,22 @@
+# Web Services & API Gateway
+fastapi>=0.95.0
+uvicorn>=0.22.0
+python-multipart>=0.0.6
+
+# Database Management
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.6
+
+# Cryptography & Security
+cryptography>=40.0.0
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+pydantic[email]>=1.10.0
+
+# Computer Vision & Machine Learning
+numpy>=1.24.0
+opencv-python>=4.7.0
+
+# Analytical Reporting & Exports
+openpyxl>=3.1.0
+reportlab>=3.6.0

@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "FaceAttend AI",
+    "slug": "faceattend-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./logo.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./logo.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.sudharshan.faceattend",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./logo.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow FaceAttend AI to access your camera."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow FaceAttend AI to use your location."
+        }
+      ]
+    ],
+    "cli": {
+      "appVersionSource": "local"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "0e3f3181-b51c-4391-80f8-e88b6c086e93"
+      }
+    },
+    "owner": "sudharshansm"
+  }
+}

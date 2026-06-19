@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Expo / React Native
+.expo/
+web-build/
+*.jks
+*.p8
+*.keystore
+
+# Local databases & configurations
+*.db
+*.sqlite
+.env
+.env.local
+.env.*.local
+
+# Large files & backups
+*.zip
+*.tar.gz
+*.tgz
+integrated-face-attendance/
+integrated-face-attendance.zip
+
+# Editor / System files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Local JSON DB (contains EHRMS tokens / PII) — never commit
+backend-node/employees.json
+backend-node/logs.json
+backend-node/users.json
+backend-node/*.backup.*.json
+backend-node/cia.json
+
+*.log
+.claude/
