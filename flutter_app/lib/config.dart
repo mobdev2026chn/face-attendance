@@ -3,8 +3,8 @@
 // the IP changes (`ipconfig`). Phone must be on the same Wi-Fi.
 const String kBackendUrl = 'http://192.168.0.26:8000/api';
 
-// AFTER the server deploy, switch to the same-domain path (no LAN IP, stable HTTPS):
-// const String kBackendUrl = 'https://ehrms.askeva.net/face/api';
+// AFTER the server deploy, switch to the face app's own domain (no LAN IP, stable HTTPS):
+// const String kBackendUrl = 'https://eface.askeva.io/api';
 
 // The EHRMS backend the app punches/breaks against DIRECTLY (single source of truth).
 // ALWAYS the DEV server (ehrms.askeva.net = EHRMS's development host) — never the
