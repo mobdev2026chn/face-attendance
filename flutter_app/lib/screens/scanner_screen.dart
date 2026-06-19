@@ -12,7 +12,9 @@ import '../config/selfie_orientation.dart';
 import '../models/scan_result.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/avatar_orientation.dart';
 import '../utils/feedback_sound.dart';
+import '../utils/selfie_normalize.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/enroll_link_dialog.dart';
 import '../widgets/face_guide_overlay.dart';
@@ -172,7 +174,11 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     if (controller == null || !controller.value.isInitialized) return null;
     final file = await controller.takePicture();
     final Uint8List bytes = await file.readAsBytes();
-    return base64Encode(bytes);
+    // Some front cameras write the selfie upside-down. Normalize to upright BEFORE
+    // sending so the punch selfie stored on EHRMS (and used for enrollment/match)
+    // is correct everywhere — no display-time guessing needed for new captures.
+    final Uint8List upright = await normalizeSelfieUpright(bytes);
+    return base64Encode(upright);
   }
 
   Future<void> _handleScanAttendance() async {
@@ -577,32 +583,44 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
               Builder(builder: (_) {
                 // Prefer the LIVE punch image just captured (interlinked — the same image
                 // sent to EHRMS as the punch selfie); fall back to the EHRMS/enrolled photo.
-                ImageProvider? provider;
-                bool flip = false;
+                // The live capture is already normalized upright at capture time, so it
+                // never needs a flip; only the stored fallback photo is orientation-probed.
                 final live = _lastCapturedImageBase64;
+                ImageProvider? liveProvider;
                 if (live != null && live.isNotEmpty && live != 'mock_test_face') {
-                  try { provider = MemoryImage(base64Decode(live)); } catch (_) {}
+                  try { liveProvider = MemoryImage(base64Decode(live)); } catch (_) {}
                 }
-                if (provider == null) {
-                  provider = _avatarProvider(employee.profilePhoto);
-                  flip = provider != null &&
-                      ehrmsSelfieNeedsFlip(employee.profilePhoto, captureIso: employee.profilePhotoIso);
-                }
-                if (provider != null) {
-                  return ClipOval(
-                    child: RotatedBox(
-                      quarterTurns: flip ? 2 : 0,
-                      child: Image(image: provider, width: 56, height: 56, fit: BoxFit.cover),
+
+                Widget circle(ImageProvider provider, bool flip) => ClipOval(
+                      child: RotatedBox(
+                        quarterTurns: flip ? 2 : 0,
+                        child: Image(image: provider, width: 56, height: 56, fit: BoxFit.cover),
+                      ),
+                    );
+
+                if (liveProvider != null) return circle(liveProvider, false);
+
+                final fallback = _avatarProvider(employee.profilePhoto);
+                if (fallback == null) {
+                  return CircleAvatar(
+                    radius: 28,
+                    backgroundColor: AppColors.primary,
+                    child: Text(
+                      employee.employeeName.isNotEmpty ? employee.employeeName[0] : '?',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 20),
                     ),
                   );
                 }
-                return CircleAvatar(
-                  radius: 28,
-                  backgroundColor: AppColors.primary,
-                  child: Text(
-                    employee.employeeName.isNotEmpty ? employee.employeeName[0] : '?',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 20),
-                  ),
+                // Detect the stored photo's true orientation (ML Kit); heuristic fallback
+                // while pending/undetermined.
+                final src = employee.profilePhoto?.trim() ?? '';
+                return FutureBuilder<bool?>(
+                  future: src.isEmpty ? Future.value(false) : AvatarOrientation.resolveNeedsFlip(src),
+                  builder: (context, snap) {
+                    final flip = snap.data ??
+                        ehrmsSelfieNeedsFlip(employee.profilePhoto, captureIso: employee.profilePhotoIso);
+                    return circle(fallback, flip);
+                  },
                 );
               }),
               const SizedBox(width: 14),

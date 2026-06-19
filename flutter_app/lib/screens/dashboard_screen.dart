@@ -6,6 +6,7 @@ import '../config/selfie_orientation.dart';
 import '../models/ehrms_overview.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/avatar_orientation.dart';
 import 'month_attendance_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -469,8 +470,8 @@ class _FaceCircle extends StatelessWidget {
 
   bool get _has => source != null && source!.trim().isNotEmpty;
 
-  // Flip only EHRMS (http) selfies captured before the orientation-fix cutoff.
-  bool get _flip => ehrmsSelfieNeedsFlip(source, captureIso: captureIso);
+  // Initial guess (timestamp heuristic) used only until ML Kit detection resolves.
+  bool get _flipFallback => ehrmsSelfieNeedsFlip(source, captureIso: captureIso);
 
   ImageProvider? _provider() {
     if (!_has) return null;
@@ -486,44 +487,52 @@ class _FaceCircle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = _provider();
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w800, color: AppColors.textMuted, letterSpacing: 1)),
-        const SizedBox(height: 2),
-        GestureDetector(
-          onTap: p == null ? null : () => _enlarge(context, p),
-          child: Container(
-            width: 46,
-            height: 46,
-            clipBehavior: Clip.antiAlias,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.black.withValues(alpha: 0.03),
-              border: Border.all(color: AppColors.border),
+    // Detect the true orientation from the image (ML Kit) and flip if upside-down;
+    // fall back to the timestamp heuristic while detection is pending/undetermined.
+    return FutureBuilder<bool?>(
+      future: _has ? AvatarOrientation.resolveNeedsFlip(source!.trim()) : Future.value(false),
+      builder: (context, snap) {
+        final flip = snap.data ?? _flipFallback;
+        return Column(
+          children: [
+            Text(label, style: const TextStyle(fontSize: 8, fontWeight: FontWeight.w800, color: AppColors.textMuted, letterSpacing: 1)),
+            const SizedBox(height: 2),
+            GestureDetector(
+              onTap: p == null ? null : () => _enlarge(context, p, flip),
+              child: Container(
+                width: 46,
+                height: 46,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withValues(alpha: 0.03),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: p == null
+                    ? const Icon(Icons.person, size: 18, color: AppColors.textMuted)
+                    : RotatedBox(quarterTurns: flip ? 2 : 0, child: Image(image: p, width: 46, height: 46, fit: BoxFit.cover)),
+              ),
             ),
-            child: p == null
-                ? const Icon(Icons.person, size: 18, color: AppColors.textMuted)
-                : RotatedBox(quarterTurns: _flip ? 2 : 0, child: Image(image: p, width: 46, height: 46, fit: BoxFit.cover)),
-          ),
-        ),
-        SizedBox(
-          height: 10,
-          child: matchScore != null
-              ? Text('${matchScore!.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 7, fontWeight: FontWeight.w700, color: AppColors.success))
-              : null,
-        ),
-      ],
+            SizedBox(
+              height: 10,
+              child: matchScore != null
+                  ? Text('${matchScore!.toStringAsFixed(0)}%', style: const TextStyle(fontSize: 7, fontWeight: FontWeight.w700, color: AppColors.success))
+                  : null,
+            ),
+          ],
+        );
+      },
     );
   }
 
-  void _enlarge(BuildContext context, ImageProvider provider) {
+  void _enlarge(BuildContext context, ImageProvider provider, bool flip) {
     showDialog(
       context: context,
       builder: (_) => Dialog(
         backgroundColor: Colors.transparent,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(16),
-          child: RotatedBox(quarterTurns: _flip ? 2 : 0, child: Image(image: provider, fit: BoxFit.contain)),
+          child: RotatedBox(quarterTurns: flip ? 2 : 0, child: Image(image: provider, fit: BoxFit.contain)),
         ),
       ),
     );

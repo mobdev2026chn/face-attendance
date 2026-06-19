@@ -43,6 +43,12 @@ dependencies:
   permission_handler: ^11.3.1
   intl: ^0.19.0
   audioplayers: ^6.1.0
+  # Selfie orientation: detect an upside-down face (ML Kit) and bake a 180° flip
+  # (image) so punch selfies are stored/displayed upright. Mirrors the EHRMS app.
+  google_mlkit_face_detection: ^0.13.1
+  image: ^4.3.0
+  path_provider: ^2.1.5
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:
