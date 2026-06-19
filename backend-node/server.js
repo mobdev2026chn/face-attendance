@@ -405,8 +405,37 @@ const app = express();
 const PORT = process.env.PORT || 8000;
 const JWT_SECRET = process.env.JWT_SECRET || 'faceattend-super-secret-key-1234';
 
+// CORS — mirrors the EHRMS backend (app_backend/index.js): same allowed hosts,
+// any localhost/127.0.0.1 port allowed for dev, and no-Origin requests (the Flutter
+// mobile apps, server-to-server, curl) always allowed. Extra origins can be added
+// via ALLOWED_ORIGINS (comma-separated env), e.g. a face admin dashboard.
+const allowedOrigins = [
+  'https://app.ektahr.com',
+  'https://my.ektahr.com',
+  'https://ehrms.askeva.net',
+  'http://ehrms.askeva.net',
+  'https://hrms.askeva.net',
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  ...(process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+    : []),
+];
+
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // mobile app / server-to-server / curl
+      if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+        return callback(null, true);
+      }
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '50mb' })); // Support base64 image transfers
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
