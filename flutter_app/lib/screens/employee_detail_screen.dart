@@ -180,21 +180,30 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           const SizedBox(height: 10),
           if (t == null)
             const Text('No attendance today.', style: TextStyle(color: AppColors.textMuted))
-          else
+          else ...[
             Row(
               children: [
                 _stat('IN', _timeOnly(t.punchIn), AppColors.success),
                 _stat('OUT', _timeOnly(t.punchOut), AppColors.danger),
-                _stat('BREAK', '${t.breakMin}m', AppColors.textDark),
                 _stat('STATUS', t.status ?? '-', AppColors.textDark),
               ],
             ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _stat('BREAKS', '${t.breakCount} · ${t.breakMin}m', AppColors.textDark),
+                _stat('BREAK FINE', _money(t.breakFine), t.breakFine > 0 ? AppColors.danger : AppColors.textDark),
+                _stat('FINE', _money(t.fine), t.fine > 0 ? AppColors.danger : AppColors.textDark),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
 
   Widget _monthCard(EmployeeDetail d) {
+    final tot = d.totals;
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -207,7 +216,16 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               Text('${d.presentDays} present', style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 12),
+          // Month-to-date totals: breaks taken + fines.
+          Row(
+            children: [
+              _stat('BREAKS', '${tot.breakCount} · ${tot.breakMin}m', AppColors.textDark),
+              _stat('BREAK FINE', _money(tot.breakFine), tot.breakFine > 0 ? AppColors.danger : AppColors.textDark),
+              _stat('TOTAL FINE', _money(tot.fine), tot.fine > 0 ? AppColors.danger : AppColors.textDark),
+            ],
+          ),
+          const Divider(height: 22),
           if (d.month.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
@@ -221,17 +239,43 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   Widget _monthRow(AttendanceRow r) {
+    final extras = <String>[];
+    if (r.breakCount > 0 || r.breakMin > 0) {
+      extras.add('${r.breakCount} break${r.breakCount == 1 ? '' : 's'} · ${r.breakMin}m');
+    }
+    if (r.lateMin > 0) extras.add('late ${r.lateMin}m');
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 92, child: Text(_dateOnly(r.date), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppColors.textDark))),
-          Expanded(child: Text('IN ${_timeOnly(r.punchIn)}', style: const TextStyle(fontSize: 12, color: AppColors.success))),
-          Expanded(child: Text('OUT ${_timeOnly(r.punchOut)}', style: const TextStyle(fontSize: 12, color: AppColors.danger))),
-          Text(r.status ?? '-', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+          Row(
+            children: [
+              SizedBox(width: 92, child: Text(_dateOnly(r.date), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppColors.textDark))),
+              Expanded(child: Text('IN ${_timeOnly(r.punchIn)}', style: const TextStyle(fontSize: 12, color: AppColors.success))),
+              Expanded(child: Text('OUT ${_timeOnly(r.punchOut)}', style: const TextStyle(fontSize: 12, color: AppColors.danger))),
+              Text(r.status ?? '-', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+            ],
+          ),
+          if (extras.isNotEmpty || r.fine > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 92, top: 2),
+              child: Row(
+                children: [
+                  Expanded(child: Text(extras.join(' · '), style: const TextStyle(fontSize: 10.5, color: AppColors.textMuted))),
+                  if (r.fine > 0)
+                    Text('Fine ${_money(r.fine)}', style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: AppColors.danger)),
+                ],
+              ),
+            ),
         ],
       ),
     );
+  }
+
+  String _money(double v) {
+    if (v <= 0) return '₹0';
+    return v == v.roundToDouble() ? '₹${v.toInt()}' : '₹${v.toStringAsFixed(2)}';
   }
 
   Widget _stat(String label, String value, Color color) {
