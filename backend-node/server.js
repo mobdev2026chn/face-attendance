@@ -768,35 +768,28 @@ app.post('/api/attendance/resolve-face', async (req, res) => {
     }
 
     const confidence = ident.confidence;
-    // Map the EHRMS identity back to a LOCAL Employee record for the punch tokens.
-    const matched = await db.Employee.findOne({
-      $or: [
-        { ehrmsEmployeeId: String(ident.employee_id) },
-        { employeeId: String(ident.employee_id) },
-        ...(ident.email ? [{ ehrmsEmail: ident.email }] : []),
-      ],
-    });
-
-    if (!matched || !matched.ehrmsLinked || !matched.ehrmsAccessToken) {
+    // NO LINKING NEEDED: EHRMS identified the face against the canonical enrollment
+    // AND minted a short-lived token for that employee. The kiosk punches EHRMS
+    // directly with it — so there is no per-employee enroll/link step on the kiosk and
+    // no local Employee/token store to maintain. (Legacy db.Employee link lookup removed.)
+    if (!ident.access_token) {
       return res.status(409).json({
-        detail: `${ident.employee_name} is recognized but not linked to EHRMS on this kiosk. Link the face first.`,
+        detail: `${ident.employee_name || 'This employee'} is recognized but EHRMS did not return a session. Update the EHRMS server.`,
         linked: false, employee_id: ident.employee_id, employee_name: ident.employee_name, confidence,
       });
     }
 
     return res.json({
       success: true, linked: true,
-      employee_id: matched.employeeId,
-      employee_name: matched.fullName,
-      department: matched.department || null,
-      profile_photo: matched.profile_photo || null,
-      // Enrollment time — proxy for when profile_photo was captured, so the app can
-      // decide the legacy 180° display flip (pre-orientation-fix images only).
-      profile_photo_iso: matched.registeredAt ? new Date(matched.registeredAt).toISOString() : null,
+      employee_id: ident.employee_id,
+      employee_name: ident.employee_name,
+      department: null,
+      profile_photo: null,         // photo now comes from EHRMS, not a local kiosk copy
+      profile_photo_iso: null,
       confidence,
       ehrms_base_url: ehrms.EHRMS_BASE_URL,
-      access_token: matched.ehrmsAccessToken,
-      refresh_token: matched.ehrmsRefreshToken || null,
+      access_token: ident.access_token,
+      refresh_token: ident.refresh_token || null,
     });
   } catch (error) {
     res.status(420).json({ detail: error.message || 'Face matching failed.' });

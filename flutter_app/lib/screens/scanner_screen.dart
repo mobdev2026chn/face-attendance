@@ -16,7 +16,6 @@ import '../utils/avatar_orientation.dart';
 import '../utils/feedback_sound.dart';
 import '../utils/selfie_normalize.dart';
 import '../widgets/app_drawer.dart';
-import '../widgets/enroll_link_dialog.dart';
 import '../widgets/face_guide_overlay.dart';
 
 class ScannerScreen extends StatefulWidget {
@@ -236,15 +235,10 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
         _resetScannerState();
       });
     } on ApiException catch (e) {
-      // First-punch enrollment OR a recognized-but-unlinked face → identify + link with
-      // the live capture (EHRMS/dev only; no local fallback).
-      if (e.message.contains('not recognized') ||
-          e.message.contains('Identity rejected') ||
-          e.message.contains('not linked')) {
-        await _offerFirstPunchEnroll();
-      } else {
-        _applyErrorGuidance(e.message);
-      }
+      // No kiosk enroll/link anymore. An unrecognized face just means the person
+      // isn't enrolled in EHRMS yet — they enroll in the EHRMS app (or their first
+      // punch there); the kiosk only identifies against EHRMS's enrolled faces.
+      _applyErrorGuidance(e.message);
     } catch (e) {
       FeedbackSound.error();
       setState(() {
@@ -292,32 +286,6 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
         duration: const Duration(seconds: 4),
       ),
     );
-  }
-
-  /// First punch for an un-enrolled face: lock the scanner, let the person identify
-  /// themselves (dev employee + password); the just-captured face is enrolled + linked.
-  /// Next scan recognizes them and punches normally.
-  Future<void> _offerFirstPunchEnroll() async {
-    final image = _lastCapturedImageBase64;
-    if (image == null) { _applyErrorGuidance('Face Not Recognized. Retrying...'); return; }
-    FeedbackSound.error(); // face not recognized → prompting first-punch enrollment
-    setState(() {
-      _cameraLocked = true;
-      _scanSuccessful = false;
-      _ovalColor = AppColors.primary;
-      _guidanceText = 'First time — identify to enroll';
-    });
-    final enrolled = await showDialog<bool>(
-      context: context,
-      builder: (_) => EnrollLinkDialog(imageBase64: image),
-    );
-    if (!mounted) return;
-    if (enrolled == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enrolled & linked. Scan again to punch.')),
-      );
-    }
-    _resetScannerState();
   }
 
   void _errorSoundThrottled() {

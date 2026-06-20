@@ -48,80 +48,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  // One-tap: auto-enroll + link ALL dev employees (no per-employee dialog). Each face is
-  // taken from their EHRMS punch selfie; those without a usable photo need a kiosk first-punch.
-  Future<void> _linkAllDev() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Link all dev employees?'),
-        content: const Text(
-          'Auto-enrolls every dev employee from their EHRMS punch selfie and links them — no per-employee step.\n\n'
-          'Employees with no usable EHRMS photo (or a different password) will be skipped; enroll those at the kiosk on their first punch.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Link all')),
-        ],
-      ),
-    );
-    if (confirm != true || !mounted) return;
+  // Linking removed: the kiosk no longer enrolls/links employees. EHRMS identifies the
+  // face against its canonical enrollment and mints a short-lived token for the punch,
+  // so there is no per-employee link/unlink step here anymore.
 
-    // Blocking progress (the bulk call logs in + embeds each employee).
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const AlertDialog(
-        content: Row(children: [
-          CircularProgressIndicator(),
-          SizedBox(width: 16),
-          Expanded(child: Text('Linking all dev employees…')),
-        ]),
-      ),
-    );
-    try {
-      final r = await ApiService.linkAllDev();
-      if (mounted) Navigator.pop(context); // close progress
-      final linked = r['linked'] ?? 0;
-      final total = r['total'] ?? 0;
-      final failed = r['failed'] ?? 0;
-      _snack('Linked $linked/$total. $failed skipped (need kiosk enrollment or different password).');
-      _refresh();
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
-      _snack('Bulk link failed: $e', isError: true);
-    }
-  }
-
-  Future<void> _unlink(EhrmsEmployee e) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Unlink from EHRMS?'),
-        content: Text('"${e.employeeName}" will revert to local-only attendance and disappear from this EHRMS view.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Unlink', style: TextStyle(color: AppColors.danger))),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await ApiService.unlinkEhrms(e.employeeId);
-      if (!mounted) return;
-      _snack('Unlinked "${e.employeeName}".');
-      _refresh();
-    } catch (err) {
-      if (!mounted) return;
-      _snack('Could not unlink: $err', isError: true);
-    }
-  }
-
-  void _snack(String msg, {bool isError = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: isError ? AppColors.danger : null),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -132,13 +62,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         elevation: 0,
         foregroundColor: AppColors.textDark,
         title: const Text('Dashboard', style: TextStyle(fontWeight: FontWeight.w800)),
-        actions: [
-          IconButton(
-            tooltip: 'Link all dev employees',
-            icon: const Icon(Icons.group_add),
-            onPressed: _linkAllDev,
-          ),
-        ],
+        // No "Link all" — the kiosk no longer links employees; EHRMS identifies the
+        // face against its enrolled store and mints a token for the punch on the fly.
       ),
       body: RefreshIndicator(
         onRefresh: () async => _refresh(),
@@ -276,15 +201,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(f.fullName, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
-                const Text('Not linked to EHRMS', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                const Text('Enrolled in EHRMS', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
               ],
             ),
           ),
-          OutlinedButton.icon(
-            onPressed: _linkAllDev,
-            icon: const Icon(Icons.link, size: 16),
-            label: const Text('Link'),
-          ),
+          // No "Link" button — identification + punch go through EHRMS directly.
         ],
       ),
     );
@@ -352,15 +273,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      tooltip: 'Unlink from EHRMS',
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      iconSize: 18,
-                      icon: const Icon(Icons.link_off, color: AppColors.textMuted),
-                      onPressed: () => _unlink(e),
                     ),
                   ],
                 ),
