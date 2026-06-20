@@ -44,4 +44,4 @@ Start-Process powershell -ArgumentList "-NoExit","-Command","cd '$frontend'; npm
 Write-Host "`n=== All services launching in separate windows ===" -ForegroundColor Cyan
 Write-Host "  Backend : http://localhost:8000/api/health"
 Write-Host "  Frontend: http://localhost:5173"
-Write-Host "  Mobile  : Flutter app -> http://192.168.0.29:8000/api`n"
+Write-Host "  Mobile  : Flutter app -> http://192.168.0.28:8000/api`n"
