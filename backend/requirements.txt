@@ -1,0 +1,27 @@
+# Face AI worker deps (backend-node/extract_face_worker.py, spawned by aiEngine.js
+# using THIS venv: backend/venv/bin/python on Linux, backend/venv/Scripts/python.exe
+# on Windows). Keep these installed or the worker dies with ModuleNotFoundError and
+# every scan/enroll falls through to "Face not matching".
+#
+# Install on the server:
+#   cd backend
+#   apt-get update && apt-get install -y build-essential cmake python3-dev python3-venv
+#   python3 -m venv venv
+#   ./venv/bin/pip install --upgrade pip
+#   ./venv/bin/pip install -r requirements.txt
+#   ./venv/bin/python -c "import numpy, cv2, face_recognition; print('engine OK')"
+#   pm2 restart face-at
+#
+# opencv-python-HEADLESS (not opencv-python): the plain wheel needs libGL/X11 system
+# libs a headless server lacks ("ImportError: libGL.so.1"); headless provides the same
+# cv2 module with no GUI deps.
+numpy>=1.24.0
+opencv-python-headless>=4.7.0
+dlib>=19.24.0
+face_recognition>=1.3.0
+
+# Anti-spoofing (FACE_LIVENESS=1, Silent-Face/MiniFASNet). Heavy; OPTIONAL — the
+# worker fails OPEN (lets the scan through) if torch is absent. Uncomment to enable
+# real liveness. CPU wheels: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# torch>=2.0.0
+# torchvision>=0.15.0
