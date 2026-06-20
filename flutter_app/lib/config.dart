@@ -5,7 +5,7 @@ const String kBackendUrl = 'https://eface.askeva.io/api';
 
 // LOCAL DEV fallback: backend running on this machine via its LAN IP (run `ipconfig`
 // to get it; phone must be on the same Wi-Fi). Uncomment to point at a local backend.
-// const String kBackendUrl = 'http://192.168.0.28:8000/api';
+// const String kBackendUrl = 'http://192.168.0.28:8080/api';
 
 // The EHRMS backend the app punches/breaks against DIRECTLY (single source of truth).
 // ALWAYS the DEV server (ehrms.askeva.net = EHRMS's development host) — never the

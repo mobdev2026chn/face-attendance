@@ -1,6 +1,6 @@
 # ============================================================
 #  FaceAttend - One-click launcher
-#  Starts: MongoDB -> Node/MongoDB backend (8000) -> Frontend (5173)
+#  Starts: MongoDB -> Node/MongoDB backend (8080) -> Frontend (5173)
 #  Usage:  right-click > Run with PowerShell,  OR  in a terminal:
 #          powershell -ExecutionPolicy Bypass -File .\start-all.ps1
 # ============================================================
@@ -23,13 +23,13 @@ if ($mongo.Status -ne 'Running') {
     Write-Host "[ok] MongoDB already running" -ForegroundColor Green
 }
 
-# --- 2. Backend (Node + MongoDB) on port 8000 ---
+# --- 2. Backend (Node + MongoDB) on port 8080 ---
 $backend = Join-Path $root "backend-node"
 if (-not (Test-Path (Join-Path $backend "node_modules"))) {
     Write-Host "[*] Installing backend dependencies..." -ForegroundColor Yellow
     Push-Location $backend; npm install; Pop-Location
 }
-Write-Host "[*] Launching backend on http://localhost:8000 ..." -ForegroundColor Yellow
+Write-Host "[*] Launching backend on http://localhost:8080 ..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList "-NoExit","-Command","cd '$backend'; npm start"
 
 # --- 3. Frontend (Vite) on port 5173 ---
@@ -42,6 +42,6 @@ Write-Host "[*] Launching frontend on http://localhost:5173 ..." -ForegroundColo
 Start-Process powershell -ArgumentList "-NoExit","-Command","cd '$frontend'; npm run dev"
 
 Write-Host "`n=== All services launching in separate windows ===" -ForegroundColor Cyan
-Write-Host "  Backend : http://localhost:8000/api/health"
+Write-Host "  Backend : http://localhost:8080/api/health"
 Write-Host "  Frontend: http://localhost:5173"
-Write-Host "  Mobile  : Flutter app -> http://192.168.0.28:8000/api`n"
+Write-Host "  Mobile  : Flutter app -> http://192.168.0.28:8080/api`n"

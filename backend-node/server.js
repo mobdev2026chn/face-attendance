@@ -402,7 +402,7 @@ async function getDevDirectory() {
 }
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 8080;
 const JWT_SECRET = process.env.JWT_SECRET || 'faceattend-super-secret-key-1234';
 
 // CORS — mirrors the EHRMS backend (app_backend/index.js): same allowed hosts,
