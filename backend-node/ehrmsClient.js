@@ -12,10 +12,11 @@ const EHRMS_WEB_BASE_URL = (process.env.EHRMS_WEB_BASE_URL || 'https://hrms.aske
 
 // Node 18+ ships a global fetch; this backend runs on Node 24.
 // `base` overrides the host (e.g. the web host for the staff directory).
-async function ehrmsRequest(method, path, { token, body, base } = {}) {
+async function ehrmsRequest(method, path, { token, body, base, extraHeaders } = {}) {
   const root = base || EHRMS_BASE_URL;
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (extraHeaders) Object.assign(headers, extraHeaders);
 
   let res;
   try {
@@ -66,6 +67,16 @@ module.exports = {
     ehrmsRequest('GET', '/api/staff', { base: EHRMS_WEB_BASE_URL, token }),
   refresh: (refreshToken) =>
     ehrmsRequest('POST', '/api/auth/refresh', { body: { refreshToken } }),
+
+  // CANONICAL 1-to-many identify against EHRMS's shared Staff.faceEnrollEmbeddings.
+  // The kiosk authenticates with a shared secret (FACE_KIOSK_SECRET), not a staff
+  // token. Returns { matched, employee_id?, employee_name?, email?, confidence, reason? }.
+  // So the kiosk recognizes faces off the SAME enrollment the EHRMS app validates against.
+  identifyFace: (imageBase64, businessId) =>
+    ehrmsRequest('POST', '/api/attendance/identify-face', {
+      extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
+      body: { image_base64: imageBase64, business_id: businessId || undefined },
+    }),
 
   // Attendance — token-protected (resolves the staff from the Bearer token)
   getToday: (token) =>

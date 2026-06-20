@@ -727,25 +727,60 @@ app.post('/api/attendance/resolve-face', async (req, res) => {
   const { image_base64 } = req.body;
   if (!image_base64) return res.status(400).json({ detail: 'Missing snapshot image data.' });
   try {
-    const employees = await db.Employee.find({});
-    if (employees.length === 0) return res.status(404).json({ detail: 'No registered profiles in database registry.' });
+    // ── CANONICAL identification now lives in EHRMS ──────────────────────────────
+    // The kiosk no longer matches against its OWN local Employee embeddings; it asks
+    // EHRMS to identify the face against the shared Staff.faceEnrollEmbeddings store,
+    // so the kiosk and the EHRMS app validate the SAME enrollment (1-to-1 + 1-to-many).
+    // The local Employee record is still consulted afterwards ONLY for the EHRMS punch
+    // tokens / link status.
+    //
+    // LEGACY local-store matching (retired — kept for reference):
+    // const employees = await db.Employee.find({});
+    // if (employees.length === 0) return res.status(404).json({ detail: 'No registered profiles in database registry.' });
+    // let liveEmbedding = image_base64 === 'mock_test_face'
+    //   ? employees[0].faceEmbedding
+    //   : await getEmbeddingFromBase64(image_base64);
+    // let minDistance = 999.0, matched = null;
+    // for (const emp of employees) {
+    //   const dist = bestDistance(liveEmbedding, emp);
+    //   if (dist < minDistance) { minDistance = dist; matched = emp; }
+    // }
+    // if (minDistance > 0.50) return res.status(401).json({ detail: 'Identity rejected. Face not recognized.' });
+    // const confidence = Math.round((1 - minDistance) * 1000) / 10;
 
-    let liveEmbedding = image_base64 === 'mock_test_face'
-      ? employees[0].faceEmbedding
-      : await getEmbeddingFromBase64(image_base64);
-
-    let minDistance = 999.0, matched = null;
-    for (const emp of employees) {
-      const dist = bestDistance(liveEmbedding, emp);
-      if (dist < minDistance) { minDistance = dist; matched = emp; }
+    let ident;
+    try {
+      ident = await ehrms.identifyFace(image_base64);
+    } catch (e) {
+      // EHRMS unreachable → the kiosk can't punch anyway (EHRMS is the source of
+      // truth), so surface a clear retryable error.
+      return res.status(420).json({ detail: ehrmsErrMsg(e, null) });
     }
-    if (minDistance > 0.50) return res.status(401).json({ detail: 'Identity rejected. Face not recognized.' });
+    if (!ident || !ident.matched) {
+      const reason = ident && ident.reason;
+      if (reason === 'no_face') {
+        return res.status(420).json({ detail: ident.detail || 'No face detected. Align your face in the guide.' });
+      }
+      if (reason === 'kiosk_identify_disabled' || reason === 'unauthorized') {
+        return res.status(503).json({ detail: 'Kiosk identify is not configured on EHRMS (FACE_KIOSK_SECRET).' });
+      }
+      return res.status(401).json({ detail: 'Identity rejected. Face not recognized.' });
+    }
 
-    const confidence = Math.round((1 - minDistance) * 1000) / 10;
-    if (!matched.ehrmsLinked || !matched.ehrmsAccessToken) {
+    const confidence = ident.confidence;
+    // Map the EHRMS identity back to a LOCAL Employee record for the punch tokens.
+    const matched = await db.Employee.findOne({
+      $or: [
+        { ehrmsEmployeeId: String(ident.employee_id) },
+        { employeeId: String(ident.employee_id) },
+        ...(ident.email ? [{ ehrmsEmail: ident.email }] : []),
+      ],
+    });
+
+    if (!matched || !matched.ehrmsLinked || !matched.ehrmsAccessToken) {
       return res.status(409).json({
-        detail: `${matched.fullName} is recognized but not linked to EHRMS. Link the face first.`,
-        linked: false, employee_id: matched.employeeId, employee_name: matched.fullName, confidence,
+        detail: `${ident.employee_name} is recognized but not linked to EHRMS on this kiosk. Link the face first.`,
+        linked: false, employee_id: ident.employee_id, employee_name: ident.employee_name, confidence,
       });
     }
 
