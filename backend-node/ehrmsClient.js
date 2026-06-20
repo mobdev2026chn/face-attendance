@@ -78,6 +78,17 @@ module.exports = {
       body: { image_base64: imageBase64, business_id: businessId || undefined },
     }),
 
+  // Face-app dashboard: EHRMS-enrolled employee roster + per-employee full detail
+  // (profile + today + month). Kiosk-secret gated; no per-employee token needed.
+  enrolledEmployees: (businessId) =>
+    ehrmsRequest('GET', `/api/attendance/kiosk-enrolled${businessId ? `?business_id=${encodeURIComponent(businessId)}` : ''}`, {
+      extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
+    }),
+  employeeDetail: (employeeId) =>
+    ehrmsRequest('GET', `/api/attendance/kiosk-employee/${encodeURIComponent(employeeId)}`, {
+      extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
+    }),
+
   // Attendance — token-protected (resolves the staff from the Bearer token)
   getToday: (token) =>
     ehrmsRequest('GET', '/api/attendance/today', { token }),

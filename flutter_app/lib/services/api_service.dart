@@ -5,6 +5,7 @@ import '../config.dart';
 import '../models/attendance_record.dart';
 import '../models/scan_result.dart';
 import '../models/ehrms_overview.dart';
+import '../models/employee_directory.dart';
 import '../models/month_attendance.dart';
 import 'ehrms_direct.dart';
 
@@ -306,6 +307,32 @@ class ApiService {
       throw ApiException('Could not load EHRMS attendance.');
     }
     return EhrmsOverview.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  /// EHRMS-enrolled employees for the dashboard (proxied to EHRMS).
+  static Future<List<EnrolledEmployee>> fetchEnrolledEmployees() async {
+    final response = await http
+        .get(Uri.parse('$kBackendUrl/employees/enrolled'))
+        .timeout(const Duration(seconds: 25));
+    if (response.statusCode != 200) {
+      throw ApiException('Could not load enrolled employees.');
+    }
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    return (body['employees'] as List<dynamic>? ?? [])
+        .whereType<Map<String, dynamic>>()
+        .map(EnrolledEmployee.fromJson)
+        .toList();
+  }
+
+  /// Full detail (profile + today + month) for one enrolled employee.
+  static Future<EmployeeDetail> fetchEmployeeDetail(String employeeId) async {
+    final response = await http
+        .get(Uri.parse('$kBackendUrl/employees/${Uri.encodeComponent(employeeId)}/detail'))
+        .timeout(const Duration(seconds: 25));
+    if (response.statusCode != 200) {
+      throw ApiException('Could not load employee detail.');
+    }
+    return EmployeeDetail.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   static Future<List<AttendanceRecord>> fetchAttendanceRecords() async {

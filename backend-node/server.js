@@ -1220,6 +1220,23 @@ app.get('/api/employees/list', async (req, res) => {
   }
 });
 
+// --- Dashboard: EHRMS-enrolled employees + per-employee detail (proxied to EHRMS,
+// which is the canonical enrollment + profile + attendance store; no local DB) ---
+app.get('/api/employees/enrolled', async (req, res) => {
+  try {
+    res.json(await ehrms.enrolledEmployees(req.query.business_id));
+  } catch (e) {
+    res.status(e.status === 503 ? 503 : 502).json({ employees: [], detail: ehrmsErrMsg(e, null) });
+  }
+});
+app.get('/api/employees/:employee_id/detail', async (req, res) => {
+  try {
+    res.json(await ehrms.employeeDetail(req.params.employee_id));
+  } catch (e) {
+    res.status(e.status === 404 ? 404 : 502).json({ detail: ehrmsErrMsg(e, null) });
+  }
+});
+
 // --- Dev EHRMS employee directory (from the dev web host /api/staff via service account) ---
 app.get('/api/employees/dev-directory', async (req, res) => {
   try {
