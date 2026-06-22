@@ -98,12 +98,10 @@ module.exports = {
       body: { selfies: Array.isArray(selfies) ? selfies : [selfies] },
     }),
 
-  // Face-app admin: clear a staff's canonical face enrollment. Gated by the kiosk
-  // secret AND an admin Bearer token — EHRMS verifies the token's DB role is admin-like.
+  // Face-app admin: clear a staff's canonical face enrollment (kiosk-secret gated).
   // Looked up by employee_id or email. Returns { success, employee_id, name, cleared }.
-  clearFace: (adminToken, { employeeId, email }) =>
+  clearFace: ({ employeeId, email }) =>
     ehrmsRequest('POST', '/api/attendance/kiosk-clear-face', {
-      token: adminToken,
       extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
       body: { employee_id: employeeId || undefined, email: email || undefined },
     }),

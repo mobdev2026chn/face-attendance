@@ -40,18 +40,29 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   /// Admin: clear this employee's enrolled face (canonical, in EHRMS) so they can
   /// re-enroll. After clearing they drop out of recognition until they enroll again.
   Future<void> _clearEnrolledFace() async {
-    // Admin-only, DB-verified: collect the admin's EHRMS credentials. The backend
-    // confirms their role is admin-like before wiping the enrollment.
-    final creds = await _promptAdminCredentials();
-    if (creds == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Clear Enrolled Face'),
+        content: Text(
+          'Remove the registered face for "${widget.name}"?\n\n'
+          'They will no longer be recognized at the kiosk until they enroll their '
+          'face again. Attendance history is not affected.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Clear Face', style: TextStyle(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
 
     setState(() => _clearing = true);
     try {
-      await ApiService.clearEnrolledFace(
-        employeeId: widget.employeeId,
-        adminEmail: creds.email,
-        adminPassword: creds.password,
-      );
+      await ApiService.clearEnrolledFace(employeeId: widget.employeeId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Cleared enrolled face for ${widget.name}.')),
@@ -70,55 +81,6 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         ),
       );
     }
-  }
-
-  /// Confirm the destructive clear AND collect admin EHRMS credentials in one dialog.
-  /// Returns null if cancelled or fields left blank.
-  Future<({String email, String password})?> _promptAdminCredentials() {
-    final emailC = TextEditingController();
-    final passC = TextEditingController();
-    return showDialog<({String email, String password})>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Clear Enrolled Face'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Remove the registered face for "${widget.name}"? They will no longer be '
-              'recognized at the kiosk until they enroll again. Attendance history is '
-              'not affected.\n\nSign in with your admin account to confirm.',
-              style: const TextStyle(fontSize: 13),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: emailC,
-              keyboardType: TextInputType.emailAddress,
-              autocorrect: false,
-              decoration: const InputDecoration(labelText: 'Admin EHRMS email'),
-            ),
-            const SizedBox(height: 6),
-            TextField(
-              controller: passC,
-              obscureText: true,
-              decoration: const InputDecoration(labelText: 'Password'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () {
-              final e = emailC.text.trim();
-              final p = passC.text;
-              if (e.isEmpty || p.isEmpty) return;
-              Navigator.of(ctx).pop((email: e, password: p));
-            },
-            child: const Text('Clear Face', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
-    );
   }
 
   @override

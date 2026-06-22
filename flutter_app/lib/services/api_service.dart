@@ -289,23 +289,14 @@ class ApiService {
     throw ApiException(data['detail']?.toString() ?? 'Enrollment failed.');
   }
 
-  /// Admin: clear a staff member's enrolled face (canonical, in EHRMS) so they can
-  /// re-enroll. Identified by [employeeId] (external HR id). Requires the requester's
-  /// EHRMS admin credentials — the backend verifies the DB role is admin-like before
-  /// clearing. After this the employee drops out of recognition until they enroll again.
-  static Future<void> clearEnrolledFace({
-    required String employeeId,
-    required String adminEmail,
-    required String adminPassword,
-  }) async {
+  /// Clear a staff member's enrolled face (canonical, in EHRMS) so they can re-enroll.
+  /// Identified by [employeeId] (external HR id). After this the employee drops out of
+  /// recognition until they enroll again.
+  static Future<void> clearEnrolledFace({required String employeeId}) async {
     final response = await http.post(
       Uri.parse('$kBackendUrl/employees/clear-face'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'employee_id': employeeId,
-        'admin_email': adminEmail,
-        'admin_password': adminPassword,
-      }),
+      body: jsonEncode({'employee_id': employeeId}),
     );
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode != 200) {

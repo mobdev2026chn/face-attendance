@@ -1319,37 +1319,19 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
   }
 });
 
-// --- ADMIN: CLEAR A STAFF'S ENROLLED FACE (canonical, in EHRMS) ---
+// --- CLEAR A STAFF'S ENROLLED FACE (canonical, in EHRMS) ---
 // Wipes Staff.faceEnrollEmbeddings so the person drops out of recognition until they
 // re-enroll. Also clears the local kiosk copy (best-effort) so the two stores agree.
-// REQUIRES an EHRMS admin: the caller signs in with their admin email+password; we
-// verify the DB role is admin-like and forward their token to EHRMS (which re-checks).
-// Body: { admin_email, admin_password, employee_id? , email? }.
-const ADMIN_ROLES = ['Admin', 'Developer', 'HR', 'SuperAdmin', 'Super Admin'];
+// Kiosk-secret gated (handled by EHRMS); no per-user credentials required.
+// Body: { employee_id? , email? }.
 app.post('/api/employees/clear-face', async (req, res) => {
   const employeeId = req.body?.employee_id || req.body?.employeeId;
   const email = req.body?.email;
-  const adminEmail = req.body?.admin_email;
-  const adminPassword = req.body?.admin_password;
   if (!employeeId && !email) {
     return res.status(400).json({ detail: 'employee_id or email is required.' });
   }
-  if (!adminEmail || !adminPassword) {
-    return res.status(400).json({ detail: 'Admin email and password are required.' });
-  }
   try {
-    // Authenticate the admin against EHRMS and verify their DB role.
-    let login;
-    try { login = await ehrms.login(adminEmail, adminPassword); }
-    catch (e) { return res.status(e.status === 503 ? 503 : 401).json({ detail: ehrmsErrMsg(e) }); }
-    const data = login && login.data;
-    if (!data || !data.accessToken) return res.status(401).json({ detail: 'Admin sign-in failed — check your email and password.' });
-    const role = String(data.user?.role || '');
-    if (!ADMIN_ROLES.map((r) => r.toLowerCase()).includes(role.toLowerCase())) {
-      return res.status(403).json({ detail: `Only an admin can clear an enrolled face (your role: ${role || 'unknown'}).` });
-    }
-
-    const result = await ehrms.clearFace(data.accessToken, { employeeId, email });
+    const result = await ehrms.clearFace({ employeeId, email });
     // Best-effort: drop the local kiosk embeddings too (legacy store; not used for
     // identification but kept tidy). Never fails the request.
     try {
