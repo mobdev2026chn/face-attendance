@@ -34,6 +34,8 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
   bool _isLoading = false;
   bool _cameraLocked = false;
   bool _scanSuccessful = false;
+  // True when the last scan found no enrolled match → offer at-kiosk enrollment.
+  bool _notRecognized = false;
   Color _ovalColor = AppColors.primary;
   String _guidanceText = 'Align Face Inside Guide';
 
@@ -163,6 +165,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     setState(() {
       _cameraLocked = false;
       _scanSuccessful = false;
+      _notRecognized = false;
       _ovalColor = AppColors.primary;
       _guidanceText = 'Align Face Inside Guide';
     });
@@ -221,6 +224,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       setState(() {
         _cameraLocked = true;
         _scanSuccessful = true;
+        _notRecognized = false;
         _ovalColor = AppColors.success;
         _guidanceText = guidance;
         _recognizedEmployee = result;
@@ -301,6 +305,10 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     // doesn't spam the sound while someone is positioning their face.
     _errorSoundThrottled();
 
+    // An unrecognized face (not in EHRMS against any user) is the cue to offer
+    // at-kiosk enrollment — distinct from positioning/spoof guidance.
+    final notRecognized = errMsg.contains('not recognized') || errMsg.contains('Identity rejected');
+
     String guidance;
     if (errMsg.contains('off-center horizontally')) {
       guidance = 'Align Center (Move Left/Right)';
@@ -316,6 +324,8 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       guidance = 'Ensure Only 1 Face Visible';
     } else if (errMsg.contains('Spoof Alert') || errMsg.contains('fake')) {
       guidance = 'Spoof Alert! Fake Face Detected';
+    } else if (notRecognized) {
+      guidance = 'Face Not Recognized — Enroll below';
     } else {
       guidance = errMsg.isNotEmpty ? errMsg : 'Face Not Recognized. Retrying...';
     }
@@ -325,7 +335,123 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       _guidanceText = guidance;
       _cameraLocked = false;
       _scanSuccessful = false;
+      _notRecognized = notRecognized;
     });
+  }
+
+  /// At-kiosk enrollment for an UNRECOGNIZED person. They sign in with their EHRMS
+  /// account (proving identity); the live capture registers their canonical face in
+  /// EHRMS. The backend refuses a face already enrolled to another user.
+  Future<void> _startKioskEnroll() async {
+    // Pause the live scan loop while enrolling.
+    setState(() {
+      _cameraLocked = true;
+      _scanSuccessful = false;
+    });
+
+    final creds = await _promptEhrmsCredentials();
+    if (creds == null) {
+      if (mounted) _resetScannerState();
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _ovalColor = AppColors.primary;
+      _guidanceText = 'Enrolling your face…';
+    });
+    try {
+      // Capture a couple of fresh upright samples for a robust enrollment.
+      final samples = <String>[];
+      for (var i = 0; i < 2; i++) {
+        final img = await _captureImageBase64();
+        if (img != null) samples.add(img);
+        await Future.delayed(const Duration(milliseconds: 350));
+      }
+      if (samples.isEmpty) {
+        throw ApiException('Could not capture your face. Please try again.');
+      }
+
+      final name = await ApiService.kioskEnroll(
+        email: creds.email,
+        password: creds.password,
+        images: samples,
+      );
+      if (!mounted) return;
+      FeedbackSound.success();
+      setState(() {
+        _ovalColor = AppColors.success;
+        _guidanceText = 'Enrolled! Scan to punch.';
+        _notRecognized = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Face enrolled for $name. You can scan now.')),
+      );
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _resetScannerState();
+      });
+    } on NeedsLiveCapture catch (e) {
+      FeedbackSound.error();
+      _showError(e.message);
+      if (mounted) _resetScannerState();
+    } on ApiException catch (e) {
+      FeedbackSound.error();
+      _showError(e.message);
+      if (mounted) _resetScannerState();
+    } catch (_) {
+      FeedbackSound.error();
+      _showError('Enrollment failed. Please try again.');
+      if (mounted) _resetScannerState();
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// Collect EHRMS credentials for at-kiosk enrollment. Returns null if cancelled.
+  Future<({String email, String password})?> _promptEhrmsCredentials() {
+    final emailC = TextEditingController();
+    final passC = TextEditingController();
+    return showDialog<({String email, String password})>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enroll Your Face'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "You're not enrolled yet. Sign in with your EHRMS account to register "
+              'your face, then look at the camera.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: emailC,
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'EHRMS email'),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: passC,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final e = emailC.text.trim();
+              final p = passC.text;
+              if (e.isEmpty || p.isEmpty) return;
+              Navigator.of(ctx).pop((email: e, password: p));
+            },
+            child: const Text('Capture & Enroll'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _handleSubsequentAction(String action, String successGuidance) async {
@@ -406,7 +532,12 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                       child: FaceGuideOverlay(color: _ovalColor, showSuccessTick: _scanSuccessful),
                     ),
                     const SizedBox(height: 12),
-                    if (_recognizedEmployee != null) _buildEmployeeCard(_recognizedEmployee!) else _buildLocationCard(),
+                    if (_recognizedEmployee != null)
+                      _buildEmployeeCard(_recognizedEmployee!)
+                    else if (_notRecognized)
+                      _buildEnrollPrompt()
+                    else
+                      _buildLocationCard(),
                     const SizedBox(height: 24),
                   ],
                 ),
@@ -483,6 +614,43 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
           Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: AppColors.primary)),
           const SizedBox(width: 8),
           const Text('READY TO SCAN', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1)),
+        ],
+      ),
+    );
+  }
+
+  /// Shown when a scanned face matched no enrolled employee — lets the person
+  /// register their face at the kiosk (gated by their EHRMS sign-in).
+  Widget _buildEnrollPrompt() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.danger.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        children: [
+          const Text(
+            'Your face isn’t enrolled yet.',
+            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isLoading ? null : _startKioskEnroll,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              icon: const Icon(Icons.person_add_alt_1),
+              label: const Text('Enroll Your Face', style: TextStyle(fontWeight: FontWeight.w800)),
+            ),
+          ),
         ],
       ),
     );

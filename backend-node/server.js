@@ -1248,6 +1248,124 @@ app.get('/api/employees/dev-directory', async (req, res) => {
   }
 });
 
+// --- KIOSK SELF-ENROLLMENT (when a face isn't in the DB against any user) ---
+// A person the kiosk doesn't recognize enrolls their face HERE: they authenticate with
+// their EHRMS email+password (proving who they are), and the live capture is registered
+// as their CANONICAL Staff.faceEnrollEmbeddings in EHRMS — the same store the kiosk
+// identifies against. Guard: the captured face must not already belong to ANOTHER user
+// (no buddy-enrolling). Body: { ehrms_email, ehrms_password, image_base64 | image_base64[] }.
+app.post('/api/employees/kiosk-enroll', async (req, res) => {
+  const { ehrms_email, ehrms_password } = req.body || {};
+  // Accept one image or an array of samples.
+  const raw = req.body?.image_base64 ?? req.body?.images;
+  const images = (Array.isArray(raw) ? raw : [raw]).filter((s) => typeof s === 'string' && s.trim());
+  if (!ehrms_email || !ehrms_password) {
+    return res.status(400).json({ detail: 'ehrms_email and ehrms_password are required.' });
+  }
+  if (images.length === 0) {
+    return res.status(400).json({ detail: 'A live face capture is required to enroll.' });
+  }
+  try {
+    // 1) Authenticate as the person enrolling (EHRMS is the identity authority).
+    let login;
+    try { login = await ehrms.login(ehrms_email, ehrms_password); }
+    catch (e) { return res.status(e.status === 503 ? 503 : 401).json({ detail: ehrmsErrMsg(e) }); }
+    const data = login && login.data;
+    if (!data || !data.accessToken) return res.status(401).json({ detail: 'EHRMS login failed — check your email and password.' });
+    const token = data.accessToken;
+    const myEmail = String(ehrms_email).trim().toLowerCase();
+
+    // 2) GUARD: make sure this face isn't already enrolled against ANOTHER user.
+    // identify-face runs the canonical 1-to-many match; a hit on a DIFFERENT person
+    // means the face is taken — block (anti buddy-enroll). A hit on the SAME person
+    // is fine (they're just (re)enrolling their own face).
+    try {
+      const ident = await ehrms.identifyFace(images[0]);
+      if (ident && ident.matched) {
+        const matchEmail = String(ident.email || '').trim().toLowerCase();
+        if (matchEmail && matchEmail !== myEmail) {
+          return res.status(409).json({
+            detail: `This face is already enrolled to ${ident.employee_name || 'another employee'}. It can't be registered to a different account.`,
+            code: 'face_taken',
+          });
+        }
+      } else if (ident && ident.reason === 'no_face') {
+        return res.status(422).json({ detail: ident.detail || 'No face detected. Align your face in the guide and retry.', needs_live_capture: true });
+      }
+    } catch (e) {
+      // Identify is a guard, not the enroll itself; if EHRMS is unreachable, fail clearly.
+      return res.status(e.status === 503 ? 503 : 502).json({ detail: ehrmsErrMsg(e) });
+    }
+
+    // 3) Enroll the canonical face on EHRMS (Staff.faceEnrollEmbeddings) for this staff.
+    let result;
+    try { result = await ehrms.enrollFace(token, images); }
+    catch (e) { return res.status(e.status === 503 ? 503 : 502).json({ detail: ehrmsErrMsg(e) }); }
+    if (!result || result.success !== true) {
+      // enroll-face returns 200 + success:false when no face could be extracted.
+      return res.status(422).json({ detail: (result && result.message) || 'Could not register your face. Please try again.', needs_live_capture: true });
+    }
+
+    const user = data.user || {};
+    return res.status(200).json({
+      success: true,
+      employee_id: (user.employeeId || user.email || ehrms_email).toString(),
+      employee_name: (user.name || ehrms_email).toString(),
+      samples: result.samples || images.length,
+      message: 'Face enrolled successfully. You can now scan to punch.',
+    });
+  } catch (error) {
+    res.status(500).json({ detail: `Enrollment failed: ${error.message}` });
+  }
+});
+
+// --- ADMIN: CLEAR A STAFF'S ENROLLED FACE (canonical, in EHRMS) ---
+// Wipes Staff.faceEnrollEmbeddings so the person drops out of recognition until they
+// re-enroll. Also clears the local kiosk copy (best-effort) so the two stores agree.
+// REQUIRES an EHRMS admin: the caller signs in with their admin email+password; we
+// verify the DB role is admin-like and forward their token to EHRMS (which re-checks).
+// Body: { admin_email, admin_password, employee_id? , email? }.
+const ADMIN_ROLES = ['Admin', 'Developer', 'HR', 'SuperAdmin', 'Super Admin'];
+app.post('/api/employees/clear-face', async (req, res) => {
+  const employeeId = req.body?.employee_id || req.body?.employeeId;
+  const email = req.body?.email;
+  const adminEmail = req.body?.admin_email;
+  const adminPassword = req.body?.admin_password;
+  if (!employeeId && !email) {
+    return res.status(400).json({ detail: 'employee_id or email is required.' });
+  }
+  if (!adminEmail || !adminPassword) {
+    return res.status(400).json({ detail: 'Admin email and password are required.' });
+  }
+  try {
+    // Authenticate the admin against EHRMS and verify their DB role.
+    let login;
+    try { login = await ehrms.login(adminEmail, adminPassword); }
+    catch (e) { return res.status(e.status === 503 ? 503 : 401).json({ detail: ehrmsErrMsg(e) }); }
+    const data = login && login.data;
+    if (!data || !data.accessToken) return res.status(401).json({ detail: 'Admin sign-in failed — check your email and password.' });
+    const role = String(data.user?.role || '');
+    if (!ADMIN_ROLES.map((r) => r.toLowerCase()).includes(role.toLowerCase())) {
+      return res.status(403).json({ detail: `Only an admin can clear an enrolled face (your role: ${role || 'unknown'}).` });
+    }
+
+    const result = await ehrms.clearFace(data.accessToken, { employeeId, email });
+    // Best-effort: drop the local kiosk embeddings too (legacy store; not used for
+    // identification but kept tidy). Never fails the request.
+    try {
+      const localId = result?.employee_id || employeeId;
+      if (localId) {
+        await db.Employee.updateOne({ employeeId: localId }, { $set: { faceEmbedding: null, faceEmbeddings: [] } });
+      }
+    } catch (_) {/* ignore local cleanup errors */}
+    res.status(200).json({ success: true, ...result });
+  } catch (e) {
+    // Pass through EHRMS auth/permission/not-found statuses; collapse the rest to 502.
+    const passthrough = [401, 403, 404, 503];
+    res.status(passthrough.includes(e.status) ? e.status : 502).json({ detail: ehrmsErrMsg(e) });
+  }
+});
+
 // --- API 6: DELETE EMPLOYEE PROFILE ---
 app.delete('/api/employees/delete', async (req, res) => {
   const { employeeId, id } = req.body;

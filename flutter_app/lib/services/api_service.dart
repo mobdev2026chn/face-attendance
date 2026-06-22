@@ -260,6 +260,59 @@ class ApiService {
     throw ApiException(data['detail']?.toString() ?? 'Enroll + link failed.');
   }
 
+  /// Kiosk self-enrollment for an UNRECOGNIZED person. They authenticate with their
+  /// EHRMS email+password; the live capture(s) are registered as their canonical face
+  /// in EHRMS (the store the kiosk identifies against). The backend rejects a face that
+  /// already belongs to another user. Returns the enrolled employee name.
+  /// Throws [NeedsLiveCapture] when no face was detected (retry the capture).
+  static Future<String> kioskEnroll({
+    required String email,
+    required String password,
+    required List<String> images,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$kBackendUrl/employees/kiosk-enroll'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'ehrms_email': email,
+        'ehrms_password': password,
+        'image_base64': images,
+      }),
+    );
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode == 200) {
+      return (data['employee_name'] ?? data['employee_id'] ?? 'employee').toString();
+    }
+    if (response.statusCode == 422 && data['needs_live_capture'] == true) {
+      throw NeedsLiveCapture(data['detail']?.toString() ?? 'No face detected. Please try again.');
+    }
+    throw ApiException(data['detail']?.toString() ?? 'Enrollment failed.');
+  }
+
+  /// Admin: clear a staff member's enrolled face (canonical, in EHRMS) so they can
+  /// re-enroll. Identified by [employeeId] (external HR id). Requires the requester's
+  /// EHRMS admin credentials — the backend verifies the DB role is admin-like before
+  /// clearing. After this the employee drops out of recognition until they enroll again.
+  static Future<void> clearEnrolledFace({
+    required String employeeId,
+    required String adminEmail,
+    required String adminPassword,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$kBackendUrl/employees/clear-face'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'employee_id': employeeId,
+        'admin_email': adminEmail,
+        'admin_password': adminPassword,
+      }),
+    );
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw ApiException(data['detail']?.toString() ?? 'Could not clear enrolled face.');
+    }
+  }
+
   /// Add the live punch face as another enrollment sample (continuous, interlinked
   /// enrollment → robust recognition, no daily re-link). Fire-and-forget / best-effort.
   static Future<void> addFaceSample({required String employeeId, required String imageBase64}) async {

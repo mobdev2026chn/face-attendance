@@ -146,9 +146,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
           style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
         ),
         trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => EmployeeDetailScreen(employeeId: e.employeeId, name: e.name, avatar: e.avatar),
-        )),
+        onTap: () async {
+          final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+            builder: (_) => EmployeeDetailScreen(employeeId: e.employeeId, name: e.name, avatar: e.avatar),
+          ));
+          // Face was cleared → the roster changed; reload the enrolled list.
+          if (changed == true) _refresh();
+        },
       ),
     );
   }

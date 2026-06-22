@@ -27,6 +27,7 @@ class EmployeeDetailScreen extends StatefulWidget {
 
 class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   late Future<EmployeeDetail> _future;
+  bool _clearing = false;
 
   @override
   void initState() {
@@ -35,6 +36,90 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
   }
 
   void _reload() => setState(() => _future = ApiService.fetchEmployeeDetail(widget.employeeId));
+
+  /// Admin: clear this employee's enrolled face (canonical, in EHRMS) so they can
+  /// re-enroll. After clearing they drop out of recognition until they enroll again.
+  Future<void> _clearEnrolledFace() async {
+    // Admin-only, DB-verified: collect the admin's EHRMS credentials. The backend
+    // confirms their role is admin-like before wiping the enrollment.
+    final creds = await _promptAdminCredentials();
+    if (creds == null) return;
+
+    setState(() => _clearing = true);
+    try {
+      await ApiService.clearEnrolledFace(
+        employeeId: widget.employeeId,
+        adminEmail: creds.email,
+        adminPassword: creds.password,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Cleared enrolled face for ${widget.name}.')),
+      );
+      // Tell the dashboard the roster changed, then leave this (now un-enrolled) detail.
+      Navigator.of(context).pop(true);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _clearing = false);
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Could not clear face'),
+          content: Text(e.message),
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        ),
+      );
+    }
+  }
+
+  /// Confirm the destructive clear AND collect admin EHRMS credentials in one dialog.
+  /// Returns null if cancelled or fields left blank.
+  Future<({String email, String password})?> _promptAdminCredentials() {
+    final emailC = TextEditingController();
+    final passC = TextEditingController();
+    return showDialog<({String email, String password})>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear Enrolled Face'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Remove the registered face for "${widget.name}"? They will no longer be '
+              'recognized at the kiosk until they enroll again. Attendance history is '
+              'not affected.\n\nSign in with your admin account to confirm.',
+              style: const TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: emailC,
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'Admin EHRMS email'),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: passC,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () {
+              final e = emailC.text.trim();
+              final p = passC.text;
+              if (e.isEmpty || p.isEmpty) return;
+              Navigator.of(ctx).pop((email: e, password: p));
+            },
+            child: const Text('Clear Face', style: TextStyle(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -166,6 +251,24 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                   ],
                 ),
               )),
+          const SizedBox(height: 6),
+          const Divider(height: 18),
+          // Admin: clear the registered face so this person can enroll a fresh one.
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _clearing ? null : _clearEnrolledFace,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.danger,
+                side: const BorderSide(color: AppColors.danger),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: _clearing
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.danger))
+                  : const Icon(Icons.face_retouching_off, size: 18),
+              label: Text(_clearing ? 'Clearing…' : 'Clear Enrolled Face'),
+            ),
+          ),
         ],
       ),
     );

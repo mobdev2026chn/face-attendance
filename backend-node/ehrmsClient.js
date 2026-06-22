@@ -89,6 +89,25 @@ module.exports = {
       extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
     }),
 
+  // Enroll the staff's CANONICAL face (Staff.faceEnrollEmbeddings) — the same store the
+  // kiosk identifies against. Token-protected: it enrolls the staff that owns `token`.
+  // Returns { success, samples, avatar, message }.
+  enrollFace: (token, selfies) =>
+    ehrmsRequest('POST', '/api/auth/enroll-face', {
+      token,
+      body: { selfies: Array.isArray(selfies) ? selfies : [selfies] },
+    }),
+
+  // Face-app admin: clear a staff's canonical face enrollment. Gated by the kiosk
+  // secret AND an admin Bearer token — EHRMS verifies the token's DB role is admin-like.
+  // Looked up by employee_id or email. Returns { success, employee_id, name, cleared }.
+  clearFace: (adminToken, { employeeId, email }) =>
+    ehrmsRequest('POST', '/api/attendance/kiosk-clear-face', {
+      token: adminToken,
+      extraHeaders: { 'x-face-kiosk-secret': process.env.FACE_KIOSK_SECRET || '' },
+      body: { employee_id: employeeId || undefined, email: email || undefined },
+    }),
+
   // Attendance — token-protected (resolves the staff from the Bearer token)
   getToday: (token) =>
     ehrmsRequest('GET', '/api/attendance/today', { token }),
