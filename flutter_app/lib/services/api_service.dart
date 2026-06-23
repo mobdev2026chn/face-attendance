@@ -296,6 +296,7 @@ class ApiService {
   /// they enroll again.
   static Future<void> clearEnrolledFace({
     required String employeeId,
+    String? email,
     required String adminEmail,
     required String adminPassword,
   }) async {
@@ -304,6 +305,7 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'employee_id': employeeId,
+        if (email != null && email.isNotEmpty) 'email': email,
         'admin_email': adminEmail,
         'admin_password': adminPassword,
       }),

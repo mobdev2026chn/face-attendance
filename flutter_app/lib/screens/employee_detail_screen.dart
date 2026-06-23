@@ -15,12 +15,14 @@ class EmployeeDetailScreen extends StatefulWidget {
   final String employeeId;
   final String name;
   final String? avatar;
+  final String? email;
 
   const EmployeeDetailScreen({
     super.key,
     required this.employeeId,
     required this.name,
     this.avatar,
+    this.email,
   });
 
   @override
@@ -71,6 +73,7 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     try {
       await ApiService.clearEnrolledFace(
         employeeId: widget.employeeId,
+        email: widget.email,
         adminEmail: creds.email,
         adminPassword: creds.password,
       );
