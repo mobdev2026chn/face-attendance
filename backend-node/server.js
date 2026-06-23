@@ -1299,6 +1299,25 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
     const token = data.accessToken;
     const myEmail = String(ehrms_email).trim().toLowerCase();
 
+    // 1.5) VALIDATION: refuse if THIS account already has a face enrolled. The kiosk
+    // self-enroll is only for not-yet-enrolled people; an already-enrolled account
+    // must be cleared by an admin before re-enrolling (prevents silent overwrite and
+    // accidental double-enroll from the credentials screen).
+    try {
+      const status = await ehrms.faceEnrollStatus(token);
+      if (status && status.enrolled) {
+        const user = data.user || {};
+        const who = user.name || ehrms_email;
+        return res.status(409).json({
+          detail: `${who} is already enrolled. Ask an admin to clear the existing face before enrolling again.`,
+          code: 'already_enrolled',
+        });
+      }
+    } catch (e) {
+      // Status is a guard, not the enroll itself; if EHRMS is unreachable, fail clearly.
+      return res.status(e.status === 503 ? 503 : 502).json({ detail: ehrmsErrMsg(e) });
+    }
+
     // 2) GUARD: make sure this face isn't already enrolled against ANOTHER user.
     // identify-face runs the canonical 1-to-many match; a hit on a DIFFERENT person
     // means the face is taken — block (anti buddy-enroll). A hit on the SAME person
@@ -1346,13 +1365,27 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
 // --- CLEAR A STAFF'S ENROLLED FACE (canonical, in EHRMS) ---
 // Wipes Staff.faceEnrollEmbeddings so the person drops out of recognition until they
 // re-enroll. Also clears the local kiosk copy (best-effort) so the two stores agree.
-// Kiosk-secret gated (handled by EHRMS); no per-user credentials required.
-// Body: { employee_id? , email? }.
+// ADMIN-CREDENTIAL gated: the caller must re-authenticate as an Admin / Super Admin
+// (verified against EHRMS) before this destructive clear runs — not just kiosk-secret.
+// Body: { employee_id? , email? , admin_email, admin_password }.
 app.post('/api/employees/clear-face', async (req, res) => {
   const employeeId = req.body?.employee_id || req.body?.employeeId;
   const email = req.body?.email;
+  const adminEmail = req.body?.admin_email;
+  const adminPassword = req.body?.admin_password;
   if (!employeeId && !email) {
     return res.status(400).json({ detail: 'employee_id or email is required.' });
+  }
+  if (!adminEmail || !adminPassword) {
+    return res.status(401).json({ detail: 'Admin credentials are required to clear an enrolled face.' });
+  }
+  // Re-authorize: only an Admin / Super Admin may clear. kioskAdminLogin 401s on bad
+  // credentials and 403s a non-admin — surface either verbatim so the kiosk explains why.
+  try {
+    await ehrms.kioskAdminLogin(adminEmail, adminPassword);
+  } catch (e) {
+    const status = [401, 403, 503].includes(e.status) ? e.status : 401;
+    return res.status(status).json({ detail: ehrmsErrMsg(e) || 'Admin authentication failed.' });
   }
   try {
     const result = await ehrms.clearFace({ employeeId, email });

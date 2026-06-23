@@ -58,6 +58,13 @@ module.exports = {
   login: (email, password) =>
     ehrmsRequest('POST', '/api/auth/login', { body: { email, password } }),
 
+  // Face-kiosk ADMIN gate: verifies credentials + role against the EHRMS `users`
+  // collection and admits ONLY Admin / Super Admin (403s everyone else). Used to
+  // re-authorize destructive kiosk actions (e.g. clearing an enrolled face).
+  // Returns { success, data: { user: { role, ... }, accessToken } }.
+  kioskAdminLogin: (email, password) =>
+    ehrmsRequest('POST', '/api/auth/kiosk-admin-login', { body: { email, password } }),
+
   // --- Web host (staff directory) ---
   // Login against the web host (where /api/staff lives). Used by the directory service account.
   webLogin: (email, password) =>
@@ -97,6 +104,12 @@ module.exports = {
       token,
       body: { selfies: Array.isArray(selfies) ? selfies : [selfies] },
     }),
+
+  // Whether the staff that owns `token` already has a canonical face enrolled.
+  // Returns { success, enrolled, samples, enrolledAt }. Used to block a kiosk
+  // self-enroll for an account that's already enrolled (admin must clear first).
+  faceEnrollStatus: (token) =>
+    ehrmsRequest('GET', '/api/auth/face-enroll-status', { token }),
 
   // Face-app admin: clear a staff's canonical face enrollment (kiosk-secret gated).
   // Looked up by employee_id or email. Returns { success, employee_id, name, cleared }.

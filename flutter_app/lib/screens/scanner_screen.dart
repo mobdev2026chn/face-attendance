@@ -404,20 +404,39 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     setState(() {
       _ovalColor = AppColors.danger;
       _guidanceText = guidance;
-      _cameraLocked = false;
       _scanSuccessful = false;
       _notRecognized = notRecognized;
+      // An unrecognized face surfaces a steady, actionable enroll prompt, so PAUSE
+      // the scan loop (like the recognized-employee path) while it's shown. Otherwise
+      // the next 800ms scans return positioning/transient guidance, toggling the
+      // prompt off and on — making the "Enroll Your Face" box blink. Other errors
+      // keep scanning live so positioning guidance stays responsive.
+      _cameraLocked = notRecognized;
     });
+
+    // Auto-recover an idle kiosk: if nobody acts on the steady enroll prompt, return
+    // to scanning so a stale prompt doesn't linger after the person walks away.
+    if (notRecognized) {
+      Future.delayed(const Duration(seconds: 8), () {
+        if (!mounted) return;
+        if (_notRecognized && !_isLoading && _recognizedEmployee == null) {
+          _resetScannerState();
+        }
+      });
+    }
   }
 
   /// At-kiosk enrollment for an UNRECOGNIZED person. They sign in with their EHRMS
   /// account (proving identity); the live capture registers their canonical face in
   /// EHRMS. The backend refuses a face already enrolled to another user.
   Future<void> _startKioskEnroll() async {
-    // Pause the live scan loop while enrolling.
+    // Pause the live scan loop while enrolling. Clearing _notRecognized also
+    // neutralizes any pending idle auto-recover timer from _applyErrorGuidance so it
+    // can't reset state (and resume background scanning) mid-enrollment.
     setState(() {
       _cameraLocked = true;
       _scanSuccessful = false;
+      _notRecognized = false;
     });
 
     final creds = await _promptEhrmsCredentials();

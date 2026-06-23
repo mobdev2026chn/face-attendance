@@ -1,9 +1,11 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../models/employee_directory.dart';
 import '../services/api_service.dart';
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 
 /// Full detail for one EHRMS-enrolled employee: profile + today's attendance +
@@ -37,15 +39,16 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
 
   void _reload() => setState(() => _future = ApiService.fetchEmployeeDetail(widget.employeeId));
 
-  /// Admin: clear this employee's enrolled face (canonical, in EHRMS) so they can
-  /// re-enroll. After clearing they drop out of recognition until they enroll again.
+  /// Admin: clear this employee's enrolled face + profile image (canonical, in EHRMS)
+  /// so they can re-enroll. Requires re-authenticating as an admin. After clearing
+  /// they drop out of recognition until they enroll again.
   Future<void> _clearEnrolledFace() async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Clear Enrolled Face'),
         content: Text(
-          'Remove the registered face for "${widget.name}"?\n\n'
+          'Remove the registered face AND profile photo for "${widget.name}"?\n\n'
           'They will no longer be recognized at the kiosk until they enroll their '
           'face again. Attendance history is not affected.',
         ),
@@ -53,19 +56,27 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Clear Face', style: TextStyle(color: AppColors.danger)),
+            child: const Text('Continue', style: TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
 
+    // Re-authorize this destructive action with admin credentials.
+    final creds = await _promptAdminCredentials();
+    if (creds == null) return;
+
     setState(() => _clearing = true);
     try {
-      await ApiService.clearEnrolledFace(employeeId: widget.employeeId);
+      await ApiService.clearEnrolledFace(
+        employeeId: widget.employeeId,
+        adminEmail: creds.email,
+        adminPassword: creds.password,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cleared enrolled face for ${widget.name}.')),
+        SnackBar(content: Text('Cleared enrolled face and profile photo for ${widget.name}.')),
       );
       // Tell the dashboard the roster changed, then leave this (now un-enrolled) detail.
       Navigator.of(context).pop(true);
@@ -81,6 +92,54 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
         ),
       );
     }
+  }
+
+  /// Collect admin credentials to authorize the clear. Pre-fills the email of the
+  /// admin already signed in to the kiosk. Returns null if cancelled.
+  Future<({String email, String password})?> _promptAdminCredentials() {
+    final loggedInEmail = context.read<AppState>().currentUser?.email ?? '';
+    final emailC = TextEditingController(text: loggedInEmail);
+    final passC = TextEditingController();
+    return showDialog<({String email, String password})>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Admin authentication'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Confirm your admin credentials to clear this enrolled face.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: emailC,
+              keyboardType: TextInputType.emailAddress,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: 'Admin email'),
+            ),
+            const SizedBox(height: 6),
+            TextField(
+              controller: passC,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'Password'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              final e = emailC.text.trim();
+              final p = passC.text;
+              if (e.isEmpty || p.isEmpty) return;
+              Navigator.of(ctx).pop((email: e, password: p));
+            },
+            child: const Text('Confirm & Clear'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
