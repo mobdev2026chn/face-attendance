@@ -335,6 +335,12 @@ async function ehrmsTodayRecordsForLinked() {
         punch_out_iso: (att && att.punchOut) ? new Date(att.punchOut).toISOString() : null,
         status,
         on_break: onBreak,
+        // Today's late arrival + permission usage (from the raw attendance doc) — drives
+        // the dashboard's per-day Present/Late/On-Break/Permission summary card.
+        late_min: Number(att && att.lateMinutes) || 0,
+        early_min: Number(att && att.earlyMinutes) || 0,
+        permission_consumed_min: Number(att && att.permissionConsumedMinutes) || 0,
+        permission_approved_min: Number(att && att.permissionApprovedMinutes) || 0,
         // Break policy + usage (from the shift break policy).
         total_break_min: bd.totalBreakMin ?? 0,
         allowed_break_min: bd.isUnlimited ? null : (bd.allowedMinutes ?? 0),
@@ -1116,11 +1122,20 @@ app.get('/api/attendance/records', async (req, res) => {
 app.get('/api/attendance/ehrms-overview', async (req, res) => {
   try {
     const { overview, linkedCount, presentIds } = await ehrmsTodayRecordsForLinked();
+    // Per-day, user-wise tallies for the dashboard summary card.
+    const lateToday = overview.filter((e) => Number(e.late_min) > 0).length;
+    const onBreakToday = overview.filter((e) => e.on_break === true).length;
+    const permissionToday = overview.filter(
+      (e) => Number(e.permission_consumed_min) > 0 || Number(e.permission_approved_min) > 0
+    ).length;
     res.json({
       source: 'EHRMS',
       ehrms_base_url: ehrms.EHRMS_BASE_URL,
       linked_employees: linkedCount,
       present_today: presentIds.size,
+      late_today: lateToday,
+      on_break_today: onBreakToday,
+      permission_today: permissionToday,
       employees: overview.sort((a, b) => String(a.employee_name).localeCompare(String(b.employee_name))),
     });
   } catch (error) {

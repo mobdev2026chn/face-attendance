@@ -9,6 +9,11 @@ class EnrolledEmployee {
   final String? avatar;
   final String? enrolledAt;
   final String? status;
+  // Today's live attendance snapshot (per-user) — drives the dashboard summary card.
+  final bool presentToday;
+  final bool lateToday;
+  final bool onBreak;
+  final bool permissionToday;
 
   EnrolledEmployee({
     required this.employeeId,
@@ -19,6 +24,10 @@ class EnrolledEmployee {
     this.avatar,
     this.enrolledAt,
     this.status,
+    this.presentToday = false,
+    this.lateToday = false,
+    this.onBreak = false,
+    this.permissionToday = false,
   });
 
   factory EnrolledEmployee.fromJson(Map<String, dynamic> j) => EnrolledEmployee(
@@ -30,6 +39,10 @@ class EnrolledEmployee {
         avatar: j['avatar']?.toString(),
         enrolledAt: j['enrolled_at']?.toString(),
         status: j['status']?.toString(),
+        presentToday: j['present_today'] == true,
+        lateToday: j['late_today'] == true,
+        onBreak: j['on_break'] == true,
+        permissionToday: j['permission_today'] == true,
       );
 }
 

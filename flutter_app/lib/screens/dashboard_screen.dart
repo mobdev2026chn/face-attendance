@@ -61,6 +61,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               padding: const EdgeInsets.all(20),
               children: [
                 _banner(all.length),
+                const SizedBox(height: 12),
+                _todaySummary(all, waiting),
                 const SizedBox(height: 16),
                 TextField(
                   decoration: const InputDecoration(
@@ -112,6 +114,67 @@ class _DashboardScreenState extends State<DashboardScreen> {
             decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(20)),
             child: Text('$count', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Today's per-day, user-wise attendance snapshot (live from EHRMS): how many
+  /// enrolled employees are present, late, currently on break, and have taken a
+  /// permission today. Counts are derived from the enrolled roster itself, so the
+  /// card and the list below always agree.
+  Widget _todaySummary(List<EnrolledEmployee> all, bool loading) {
+    final present = all.where((e) => e.presentToday).length;
+    final late = all.where((e) => e.lateToday).length;
+    final onBreak = all.where((e) => e.onBreak).length;
+    final permission = all.where((e) => e.permissionToday).length;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('TODAY',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1, color: AppColors.primary)),
+              const Spacer(),
+              if (loading)
+                const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _summaryStat('Present', present, Icons.how_to_reg, AppColors.success, loading),
+              _summaryStat('Late', late, Icons.schedule, AppColors.danger, loading),
+              _summaryStat('On Break', onBreak, Icons.free_breakfast, Colors.orange, loading),
+              _summaryStat('Permission', permission, Icons.event_available, AppColors.primary, loading),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryStat(String label, int value, IconData icon, Color color, bool loading) {
+    return Expanded(
+      child: Column(
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(height: 6),
+          Text(
+            loading ? '–' : '$value',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: color),
+          ),
+          const SizedBox(height: 2),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppColors.textMuted)),
         ],
       ),
     );

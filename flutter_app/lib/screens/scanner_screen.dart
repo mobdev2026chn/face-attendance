@@ -171,6 +171,14 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     });
   }
 
+  /// Dismiss the centered result dialog (recognized employee / enroll prompt)
+  /// and return the scanner to its ready state.
+  void _dismissResult() {
+    if (_isLoading) return;
+    setState(() => _recognizedEmployee = null);
+    _resetScannerState();
+  }
+
   Future<String?> _captureImageBase64() async {
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return null;
@@ -595,19 +603,69 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                       child: FaceGuideOverlay(color: _ovalColor, showSuccessTick: _scanSuccessful),
                     ),
                     const SizedBox(height: 12),
-                    if (_recognizedEmployee != null)
-                      _buildEmployeeCard(_recognizedEmployee!)
-                    else if (_notRecognized)
-                      _buildEnrollPrompt()
-                    else
-                      _buildLocationCard(),
+                    _buildLocationCard(),
                     const SizedBox(height: 24),
                   ],
                 ),
               ),
+              // Scan result (recognized employee or enroll prompt) is shown as a
+              // centered dialog over a dim scrim, not docked at the bottom.
+              if (_recognizedEmployee != null || _notRecognized)
+                _buildResultDialog(),
             ],
           );
         },
+      ),
+    );
+  }
+
+  /// Centered modal-style overlay for the scan result. Sits above the camera
+  /// preview with a dim scrim so the card reads like a dialog in the middle of
+  /// the screen instead of being docked at the bottom.
+  Widget _buildResultDialog() {
+    return Positioned.fill(
+      // Tap anywhere on the scrim (outside the card) to cancel.
+      child: GestureDetector(
+        onTap: _dismissResult,
+        child: Container(
+          color: Colors.black.withValues(alpha: 0.55),
+          child: SafeArea(
+            child: Center(
+              // Swallow taps on the card itself so they don't dismiss.
+              child: GestureDetector(
+                onTap: () {},
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 600),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _recognizedEmployee != null
+                            ? _buildEmployeeCard(_recognizedEmployee!)
+                            : _buildEnrollPrompt(),
+                        const SizedBox(height: 18),
+                        // Circular cancel icon.
+                        Material(
+                          color: Colors.white.withValues(alpha: 0.12),
+                          shape: const CircleBorder(side: BorderSide(color: Colors.white, width: 1.5)),
+                          child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: _isLoading ? null : _dismissResult,
+                            child: const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: Icon(Icons.close, size: 26, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -768,11 +826,11 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     final isLateOrEarly = employee.status.toLowerCase().contains('late') || employee.status.toLowerCase().contains('early');
 
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(22),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -793,7 +851,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                 Widget circle(ImageProvider provider, bool flip) => ClipOval(
                       child: RotatedBox(
                         quarterTurns: flip ? 2 : 0,
-                        child: Image(image: provider, width: 56, height: 56, fit: BoxFit.cover),
+                        child: Image(image: provider, width: 72, height: 72, fit: BoxFit.cover),
                       ),
                     );
 
@@ -802,11 +860,11 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                 final fallback = _avatarProvider(employee.profilePhoto);
                 if (fallback == null) {
                   return CircleAvatar(
-                    radius: 28,
+                    radius: 36,
                     backgroundColor: AppColors.primary,
                     child: Text(
                       employee.employeeName.isNotEmpty ? employee.employeeName[0] : '?',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 20),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 26),
                     ),
                   );
                 }
@@ -822,15 +880,15 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                   },
                 );
               }),
-              const SizedBox(width: 14),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(employee.employeeName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textDark)),
-                    Text('ID: ${employee.employeeId}', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-                    if (employee.department != null) Text('Dept: ${employee.department}', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-                    const SizedBox(height: 6),
+                    Text(employee.employeeName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.textDark)),
+                    Text('ID: ${employee.employeeId}', style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                    if (employee.department != null) Text('Dept: ${employee.department}', style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                    const SizedBox(height: 8),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(

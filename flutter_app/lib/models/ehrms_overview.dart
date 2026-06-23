@@ -29,6 +29,11 @@ class EhrmsEmployee {
   final String? punchOutIso;
   final String status;
   final bool onBreak;
+  // Today's late arrival + permission usage (minutes), from the raw attendance doc.
+  final int lateMin;
+  final int earlyMin;
+  final int permissionConsumedMin;
+  final int permissionApprovedMin;
   final int totalBreakMin;
   final int? allowedBreakMin; // null = unlimited
   final int? remainingBreakMin; // null = unlimited
@@ -55,6 +60,10 @@ class EhrmsEmployee {
     this.punchOutIso,
     required this.status,
     required this.onBreak,
+    this.lateMin = 0,
+    this.earlyMin = 0,
+    this.permissionConsumedMin = 0,
+    this.permissionApprovedMin = 0,
     required this.totalBreakMin,
     this.allowedBreakMin,
     this.remainingBreakMin,
@@ -81,6 +90,10 @@ class EhrmsEmployee {
       punchOutIso: json['punch_out_iso']?.toString(),
       status: (json['status'] ?? '-').toString(),
       onBreak: json['on_break'] == true,
+      lateMin: (json['late_min'] is num) ? (json['late_min'] as num).toInt() : 0,
+      earlyMin: (json['early_min'] is num) ? (json['early_min'] as num).toInt() : 0,
+      permissionConsumedMin: (json['permission_consumed_min'] is num) ? (json['permission_consumed_min'] as num).toInt() : 0,
+      permissionApprovedMin: (json['permission_approved_min'] is num) ? (json['permission_approved_min'] as num).toInt() : 0,
       totalBreakMin: (json['total_break_min'] is num) ? (json['total_break_min'] as num).toInt() : 0,
       allowedBreakMin: (json['allowed_break_min'] is num) ? (json['allowed_break_min'] as num).toInt() : null,
       remainingBreakMin: (json['remaining_break_min'] is num) ? (json['remaining_break_min'] as num).toInt() : null,
@@ -98,18 +111,31 @@ class EhrmsEmployee {
       referencePhoto: json['reference_photo']?.toString(),
     );
   }
+
+  /// Arrived late today (carries a late-arrival penalty/duration).
+  bool get isLate => lateMin > 0;
+
+  /// Took (or was approved for) a permission today.
+  bool get hasPermission => permissionConsumedMin > 0 || permissionApprovedMin > 0;
 }
 
 class EhrmsOverview {
   final String ehrmsBaseUrl;
   final int linkedEmployees;
   final int presentToday;
+  // Per-day, user-wise tallies for the dashboard summary card.
+  final int lateToday;
+  final int onBreakToday;
+  final int permissionToday;
   final List<EhrmsEmployee> employees;
 
   EhrmsOverview({
     required this.ehrmsBaseUrl,
     required this.linkedEmployees,
     required this.presentToday,
+    this.lateToday = 0,
+    this.onBreakToday = 0,
+    this.permissionToday = 0,
     required this.employees,
   });
 
@@ -117,10 +143,15 @@ class EhrmsOverview {
     final list = (json['employees'] as List<dynamic>? ?? [])
         .map((e) => EhrmsEmployee.fromJson(e as Map<String, dynamic>))
         .toList();
+    int countOr(String key, bool Function(EhrmsEmployee) test) =>
+        (json[key] is num) ? (json[key] as num).toInt() : list.where(test).length;
     return EhrmsOverview(
       ehrmsBaseUrl: (json['ehrms_base_url'] ?? '').toString(),
       linkedEmployees: (json['linked_employees'] is num) ? (json['linked_employees'] as num).toInt() : 0,
-      presentToday: (json['present_today'] is num) ? (json['present_today'] as num).toInt() : 0,
+      presentToday: (json['present_today'] is num) ? (json['present_today'] as num).toInt() : list.where((e) => e.presentToday).length,
+      lateToday: countOr('late_today', (e) => e.isLate),
+      onBreakToday: countOr('on_break_today', (e) => e.onBreak),
+      permissionToday: countOr('permission_today', (e) => e.hasPermission),
       employees: list,
     );
   }
