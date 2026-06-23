@@ -12,9 +12,10 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _emailController = TextEditingController(text: 'temp@mail');
-  final _passwordController = TextEditingController(text: '123');
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _showPassword = false;
+  bool _loading = false;
 
   @override
   void dispose() {
@@ -23,7 +24,9 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  void _handleLogin() {
+  Future<void> _handleLogin() async {
+    if (_loading) return;
+
     final email = _emailController.text;
     final password = _passwordController.text;
 
@@ -32,15 +35,20 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final appState = context.read<AppState>();
-    final admin = appState.login(email, password);
+    setState(() => _loading = true);
+    final result = await context.read<AppState>().login(email, password);
+    if (!mounted) return;
+    setState(() => _loading = false);
 
-    if (admin != null) {
+    if (result.ok) {
       Navigator.of(context).pushReplacementNamed('/scanner');
       return;
     }
 
-    _showAlert('Invalid Credentials', 'Incorrect email or password. Only registered admin accounts can log in.');
+    _showAlert(
+      'Login Failed',
+      result.error ?? 'Incorrect email or password. Only admin accounts can log in.',
+    );
   }
 
   void _showAlert(String title, String message) {
@@ -122,7 +130,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 SizedBox(
                   height: 54,
                   child: ElevatedButton(
-                    onPressed: _handleLogin,
+                    onPressed: _loading ? null : _handleLogin,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
@@ -130,7 +138,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       shadowColor: AppColors.primary.withValues(alpha: 0.4),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
-                    child: const Text('Login', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                    child: _loading
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white),
+                          )
+                        : const Text('Login', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
                   ),
                 ),
                 const SizedBox(height: 20),

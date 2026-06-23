@@ -280,6 +280,29 @@ class EhrmsDirect {
     if (action == 'out' && co == null) co = nowFmt;
     final outStatus = (wAtt['status'] ?? att?['status'] ?? status).toString();
 
+    // Exact EHRMS policy notice for the break write (disabled / no-allowance
+    // "...processed with Fine", or "Allocated break time exceeded by N minutes.").
+    String? notice = (wbody['notice'] is String && (wbody['notice'] as String).trim().isNotEmpty)
+        ? wbody['notice'] as String
+        : null;
+
+    // Fine + overtime + permission snapshot straight from the EHRMS punch response
+    // (attendance doc). EHRMS computes these against the shift allocated for THAT
+    // day — the kiosk only surfaces them, never recomputes or hardcodes them.
+    int? intOf(dynamic v) => (v is num) ? v.toInt() : null;
+    num? numOf(dynamic v) => (v is num) ? v : null;
+    String? strNotice(dynamic v) =>
+        (v is String && v.trim().isNotEmpty) ? v : null;
+    final int? lateMinutes = intOf(wAtt['lateMinutes']);
+    final int? earlyMinutes = intOf(wAtt['earlyMinutes']);
+    final num? fineAmount = numOf(wAtt['fineAmount']);
+    final int? overtimeMinutes = intOf(wAtt['overtime']);
+    final num? overtimeAmount = numOf(wAtt['overtimeAmount']);
+    final String? overtimeNotice =
+        strNotice(wbody['overtimeNotice']) ?? strNotice(wAtt['overtimeNotice']);
+    final String? permissionNotice =
+        strNotice(wbody['permissionNotice']) ?? strNotice(wAtt['permissionNotice']);
+
     // Break policy (only for break actions) — single extra read, best-effort.
     int? breakTotal, breakAllowed, breakRemaining;
     bool breakOver = false, breakUnlimited = false;
@@ -293,6 +316,12 @@ class EhrmsDirect {
           breakAllowed = (bd['allowedMinutes'] is num) ? (bd['allowedMinutes'] as num).toInt() : null;
           breakRemaining = (bd['remainingMin'] is num) ? (bd['remainingMin'] as num).toInt() : null;
           breakOver = breakAllowed != null && breakAllowed > 0 && (breakTotal ?? 0) > breakAllowed;
+        }
+        // Fallback to the summary's policy notice (disabled / no-allowance state)
+        // when the write response didn't carry one.
+        if (notice == null && bd['breakNotice'] is String &&
+            (bd['breakNotice'] as String).trim().isNotEmpty) {
+          notice = bd['breakNotice'] as String;
         }
       } catch (_) {/* policy is best-effort */}
     }
@@ -313,6 +342,14 @@ class EhrmsDirect {
       breakRemainingMin: breakRemaining,
       breakOver: breakOver,
       breakUnlimited: breakUnlimited,
+      notice: notice,
+      lateMinutes: lateMinutes,
+      earlyMinutes: earlyMinutes,
+      fineAmount: fineAmount,
+      overtimeMinutes: overtimeMinutes,
+      overtimeAmount: overtimeAmount,
+      overtimeNotice: overtimeNotice,
+      permissionNotice: permissionNotice,
     );
   }
 }

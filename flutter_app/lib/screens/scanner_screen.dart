@@ -231,6 +231,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       });
       FeedbackSound.success();
       _notifyBreakPolicy(result);
+      _notifyPunchPolicy(result);
       _addFaceSample(result, imageBase64);
 
       Future.delayed(const Duration(seconds: 5), () {
@@ -267,9 +268,15 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
   /// Notify the break policy per EHRMS after a break action (remaining/over-allowance).
   void _notifyBreakPolicy(ScanResult r) {
     if (r.action != 'Break-In' && r.action != 'Break-Out') return;
+    // Prefer EHRMS's exact policy notice (disabled / no-allowance "...processed with
+    // Fine", or "Allocated break time exceeded by N minutes.") — single source of truth.
+    final notice = r.notice;
+    final hasNotice = notice != null && notice.trim().isNotEmpty;
     String msg;
     if (r.action == 'Break-In') {
-      if (r.breakUnlimited) {
+      if (hasNotice) {
+        msg = notice;
+      } else if (r.breakUnlimited) {
         msg = 'Break started — unlimited break allowance.';
       } else if (r.breakRemainingMin != null) {
         msg = 'Break started — ${r.breakRemainingMin}m left of ${r.breakAllowedMin ?? 0}m today.';
@@ -278,16 +285,72 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       }
     } else {
       final taken = r.breakTotalMin != null ? '${r.breakTotalMin}m taken today' : 'break ended';
-      msg = r.breakOver
-          ? 'Break ended — $taken. Over allowance (${r.breakAllowedMin}m) — a fine may apply.'
-          : 'Break ended — $taken.';
+      if (hasNotice) {
+        msg = 'Break ended — $taken.\n$notice';
+      } else {
+        msg = r.breakOver
+            ? 'Break ended — $taken. Over allowance (${r.breakAllowedMin}m) — a fine may apply.'
+            : 'Break ended — $taken.';
+      }
     }
-    if (r.breakOver) FeedbackSound.warn();
+    final highlight = r.breakOver || hasNotice;
+    if (highlight) FeedbackSound.warn();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
-        backgroundColor: r.breakOver ? AppColors.danger : null,
+        backgroundColor: highlight ? AppColors.danger : null,
         duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// Surface the EHRMS fine + overtime policy on a real punch (in/out). EHRMS is the
+  /// single source of truth: it computes late/early/break/permission fine and overtime
+  /// against the shift allocated for THAT day. The kiosk only displays the result.
+  void _notifyPunchPolicy(ScanResult r) {
+    if (r.action != 'Check-In' && r.action != 'Check-Out') return;
+
+    final lines = <String>[];
+    // Late / early fine (with the day's total fine amount when EHRMS charged one).
+    final late = r.lateMinutes ?? 0;
+    final early = r.earlyMinutes ?? 0;
+    final fine = (r.fineAmount ?? 0).toDouble();
+    if (r.action == 'Check-In' && late > 0) {
+      lines.add('Late check-in by $late min.');
+    }
+    if (r.action == 'Check-Out' && early > 0) {
+      lines.add('Early exit by $early min.');
+    }
+    if (fine > 0) {
+      lines.add('Fine: ₹${fine.toStringAsFixed(fine.truncateToDouble() == fine ? 0 : 2)}.');
+    }
+    // Permission policy notice (verbatim from EHRMS), if any.
+    if (r.permissionNotice != null) lines.add(r.permissionNotice!);
+
+    // Overtime, only meaningful at punch-out.
+    if (r.action == 'Check-Out') {
+      final otNotice = r.overtimeNotice; // disabled / not-configured wording
+      final ot = r.overtimeMinutes ?? 0;
+      final otAmt = (r.overtimeAmount ?? 0).toDouble();
+      if (otNotice != null) {
+        lines.add(otNotice);
+      } else if (ot > 0) {
+        final amt = otAmt > 0
+            ? ' (₹${otAmt.toStringAsFixed(otAmt.truncateToDouble() == otAmt ? 0 : 2)})'
+            : '';
+        lines.add('Overtime earned: $ot min$amt.');
+      }
+    }
+
+    if (lines.isEmpty) return;
+    final isFine = late > 0 || early > 0 || fine > 0 ||
+        r.permissionNotice != null || r.overtimeNotice != null;
+    if (isFine) FeedbackSound.warn();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(lines.join('\n')),
+        backgroundColor: isFine ? AppColors.danger : AppColors.success,
+        duration: const Duration(seconds: 5),
       ),
     );
   }
@@ -799,21 +862,79 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
               ),
             ],
           ),
-          if (isLateOrEarly) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: AppColors.danger.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(12),
+          // Fine banner — wording driven by EHRMS's per-day shift calc (late/early
+          // minutes + total fine amount), never a hardcoded shift time.
+          Builder(builder: (_) {
+            final late = employee.lateMinutes ?? 0;
+            final early = employee.earlyMinutes ?? 0;
+            final fine = (employee.fineAmount ?? 0).toDouble();
+            final showBanner = isLateOrEarly || late > 0 || early > 0 || fine > 0;
+            if (!showBanner) return const SizedBox.shrink();
+            final parts = <String>[];
+            if (late > 0) parts.add('PUNCHED LATE BY $late MIN');
+            if (early > 0) parts.add('PUNCHED OUT EARLY BY $early MIN');
+            if (parts.isEmpty) {
+              parts.add(employee.status.toLowerCase().contains('late')
+                  ? 'PUNCHED LATE'
+                  : 'PUNCHED OUT EARLY');
+            }
+            if (fine > 0) {
+              parts.add('FINE ₹${fine.toStringAsFixed(fine.truncateToDouble() == fine ? 0 : 2)}');
+            }
+            return Column(children: [
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                alignment: Alignment.center,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: AppColors.danger.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  parts.join(' • '),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.danger, fontSize: 11, fontWeight: FontWeight.w800),
+                ),
               ),
-              child: Text(
-                employee.status.toLowerCase().contains('late') ? 'PUNCHED LATE (After 10:10 AM)' : 'PUNCHED OUT EARLY (Before 7:00 PM)',
-                style: const TextStyle(color: AppColors.danger, fontSize: 11, fontWeight: FontWeight.w800),
+            ]);
+          }),
+          // Overtime banner (punch-out): earned OT or EHRMS's disabled/not-configured notice.
+          Builder(builder: (_) {
+            if (employee.action != 'Check-Out') return const SizedBox.shrink();
+            final ot = employee.overtimeMinutes ?? 0;
+            final otAmt = (employee.overtimeAmount ?? 0).toDouble();
+            final otNotice = employee.overtimeNotice;
+            String? text;
+            Color color = AppColors.success;
+            if (ot > 0) {
+              final amt = otAmt > 0
+                  ? ' • ₹${otAmt.toStringAsFixed(otAmt.truncateToDouble() == otAmt ? 0 : 2)}'
+                  : '';
+              text = 'OVERTIME $ot MIN$amt';
+            } else if (otNotice != null && otNotice.trim().isNotEmpty) {
+              text = otNotice.toUpperCase();
+              color = AppColors.textMuted;
+            }
+            if (text == null) return const SizedBox.shrink();
+            return Column(children: [
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+                alignment: Alignment.center,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  text,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w800),
+                ),
               ),
-            ),
-          ],
+            ]);
+          }),
           if (employee.action == 'Already-Checked-In') ...[
             const SizedBox(height: 14),
             Row(

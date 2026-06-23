@@ -38,16 +38,20 @@ class AppDrawer extends StatelessWidget {
                   _MenuButton(
                     label: 'View Dashboard',
                     onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).pushNamed('/dashboard');
+                      // Capture the navigator BEFORE popping the drawer — popping
+                      // unmounts this widget, leaving `context` defunct.
+                      final navigator = Navigator.of(context);
+                      navigator.pop();
+                      navigator.pushNamed('/dashboard');
                     },
                   ),
                   const SizedBox(height: 14),
                   _MenuButton(
                     label: 'Admin Panel',
                     onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).pushNamed('/passcode');
+                      final navigator = Navigator.of(context);
+                      navigator.pop();
+                      navigator.pushNamed('/passcode');
                     },
                   ),
                   const SizedBox(height: 14),
@@ -55,8 +59,9 @@ class AppDrawer extends StatelessWidget {
                     label: 'Log Out',
                     color: AppColors.danger,
                     onTap: () {
-                      Navigator.of(context).pop();
-                      _confirmLogout(context);
+                      final navigator = Navigator.of(context);
+                      navigator.pop();
+                      _confirmLogout(navigator);
                     },
                   ),
                 ],
@@ -73,18 +78,21 @@ class AppDrawer extends StatelessWidget {
     );
   }
 
-  void _confirmLogout(BuildContext context) {
+  void _confirmLogout(NavigatorState navigator) {
     showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
+      // The drawer (and its context) is already gone, so anchor the dialog on the
+      // navigator's own context, and drive every action from the dialog's OWN
+      // builder context / the captured navigator — never the dead drawer context.
+      context: navigator.context,
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Logout'),
         content: const Text('Are you sure you want to log out?'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Stay Logged In')),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Stay Logged In')),
           TextButton(
             onPressed: () {
-              Navigator.of(context).pop();
-              Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+              Navigator.of(dialogContext).pop(); // close the dialog
+              navigator.pushNamedAndRemoveUntil('/login', (route) => false);
             },
             child: const Text('Log Out', style: TextStyle(color: AppColors.danger)),
           ),

@@ -236,15 +236,22 @@ async function handleEhrmsScan(emp, minDistance, req, res) {
   }
 
   // 5. Perform the write through EHRMS (EHRMS enforces its own shift/salary/geofence rules)
+  // Capture the canonical policy notice EHRMS returns for break actions (exact tooltip
+  // wording: disabled / no-allowance "...processed with Fine", or "Allocated break time
+  // exceeded by N minutes."). The kiosk shows EHRMS's wording verbatim — single source
+  // of truth — instead of building its own near-duplicate.
+  let ehrmsNotice = null;
   try {
     if (requestedAction === 'in') {
       await ehrmsCall(emp, (t) => ehrms.checkIn(t, { latitude, longitude, selfie, source: 'software' }));
     } else if (requestedAction === 'out') {
       await ehrmsCall(emp, (t) => ehrms.checkOut(t, { latitude, longitude, selfie, source: 'software' }));
     } else if (requestedAction === 'break_in') {
-      await ehrmsCall(emp, (t) => ehrms.startBreak(t, { latitude, longitude, selfie }));
+      const r = await ehrmsCall(emp, (t) => ehrms.startBreak(t, { latitude, longitude, selfie }));
+      ehrmsNotice = r && typeof r.notice === 'string' && r.notice.trim() ? r.notice : null;
     } else if (requestedAction === 'break_out') {
-      await ehrmsCall(emp, (t) => ehrms.endBreak(t, activeBreakId, { latitude, longitude, selfie }));
+      const r = await ehrmsCall(emp, (t) => ehrms.endBreak(t, activeBreakId, { latitude, longitude, selfie }));
+      ehrmsNotice = r && typeof r.notice === 'string' && r.notice.trim() ? r.notice : null;
     }
   } catch (e) {
     const status = (e.status === 401 || e.status === 503) ? e.status : 400;
@@ -273,6 +280,8 @@ async function handleEhrmsScan(emp, minDistance, req, res) {
     check_out_time: checkOutTimeStr,
     already_checked_in: hasPunchedInToday || requestedAction === 'in',
     already_checked_out: hasPunchedOutToday || requestedAction === 'out',
+    // Exact EHRMS policy notice for the break that was just taken (null otherwise).
+    notice: ehrmsNotice,
   });
 }
 

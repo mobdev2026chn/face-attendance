@@ -113,6 +113,8 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
                 _todayCard(d.today),
                 const SizedBox(height: 14),
                 _monthCard(d),
+                const SizedBox(height: 14),
+                _monthList(d),
               ],
             ),
           );
@@ -290,58 +292,32 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
               _stat('TOTAL FINE', _money(tot.fine), tot.fine > 0 ? AppColors.danger : AppColors.textDark),
             ],
           ),
-          const Divider(height: 22),
-          if (d.month.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('No attendance this month.', style: TextStyle(color: AppColors.textMuted)),
-            )
-          else
-            ...d.month.reversed.map(_monthRow),
+          const SizedBox(height: 6),
         ],
       ),
     );
   }
 
-  Widget _monthRow(AttendanceRow r) {
-    final extras = <String>[];
-    if (r.breakCount > 0 || r.breakMin > 0) {
-      extras.add('${r.breakCount} break${r.breakCount == 1 ? '' : 's'} · ${r.breakMin}m');
+  /// The month's days as individual, tappable cards (newest first). Tapping a
+  /// card expands it to show that day's break / permission / fine breakdown.
+  Widget _monthList(EmployeeDetail d) {
+    if (d.month.isEmpty) {
+      return _card(
+        child: const Text('No attendance this month.', style: TextStyle(color: AppColors.textMuted)),
+      );
     }
-    if (r.lateMin > 0) extras.add('late ${r.lateMin}m');
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              SizedBox(width: 92, child: Text(_dateOnly(r.date), style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppColors.textDark))),
-              Expanded(child: Text('IN ${_timeOnly(r.punchIn)}', style: const TextStyle(fontSize: 12, color: AppColors.success))),
-              Expanded(child: Text('OUT ${_timeOnly(r.punchOut)}', style: const TextStyle(fontSize: 12, color: AppColors.danger))),
-              Text(r.status ?? '-', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
-            ],
+    return Column(
+      children: [
+        for (final r in d.month.reversed)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _DayCard(row: r),
           ),
-          if (extras.isNotEmpty || r.fine > 0)
-            Padding(
-              padding: const EdgeInsets.only(left: 92, top: 2),
-              child: Row(
-                children: [
-                  Expanded(child: Text(extras.join(' · '), style: const TextStyle(fontSize: 10.5, color: AppColors.textMuted))),
-                  if (r.fine > 0)
-                    Text('Fine ${_money(r.fine)}', style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700, color: AppColors.danger)),
-                ],
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 
-  String _money(double v) {
-    if (v <= 0) return '₹0';
-    return v == v.roundToDouble() ? '₹${v.toInt()}' : '₹${v.toStringAsFixed(2)}';
-  }
+  String _money(double v) => _fmtMoney(v);
 
   Widget _stat(String label, String value, Color color) {
     return Expanded(
@@ -369,21 +345,228 @@ class _EmployeeDetailScreenState extends State<EmployeeDetailScreen> {
     );
   }
 
-  String _dateOnly(String? iso) {
-    if (iso == null || iso.isEmpty) return '-';
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return iso;
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  String _dateOnly(String? iso) => _fmtDate(iso);
+
+  String _timeOnly(String? iso) => _fmtTime(iso);
+}
+
+// --- Shared formatters (used by the screen and the per-day expandable cards) ---
+
+String _fmtMoney(double v) {
+  if (v <= 0) return '₹0';
+  return v == v.roundToDouble() ? '₹${v.toInt()}' : '₹${v.toStringAsFixed(2)}';
+}
+
+String _fmtDate(String? iso) {
+  if (iso == null || iso.isEmpty) return '-';
+  final dt = DateTime.tryParse(iso);
+  if (dt == null) return iso;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+}
+
+String _fmtTime(String? iso) {
+  if (iso == null || iso.isEmpty) return '--';
+  final dt = DateTime.tryParse(iso);
+  if (dt == null) return iso;
+  final l = dt.toLocal();
+  final h = l.hour % 12 == 0 ? 12 : l.hour % 12;
+  final m = l.minute.toString().padLeft(2, '0');
+  return '$h:$m ${l.hour < 12 ? 'AM' : 'PM'}';
+}
+
+String _weekday(String? iso) {
+  if (iso == null || iso.isEmpty) return '';
+  final dt = DateTime.tryParse(iso);
+  if (dt == null) return '';
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  return days[dt.weekday - 1];
+}
+
+/// A single day in the month list. Collapsed it shows date + punch in/out +
+/// status + a fine badge; tapping expands it to the break, permission and fine
+/// breakdown for that date.
+class _DayCard extends StatefulWidget {
+  final AttendanceRow row;
+  const _DayCard({required this.row});
+
+  @override
+  State<_DayCard> createState() => _DayCardState();
+}
+
+class _DayCardState extends State<_DayCard> {
+  bool _open = false;
+
+  AttendanceRow get r => widget.row;
+
+  bool get _hasDetail =>
+      r.breaks.isNotEmpty || !r.permission.isEmpty || r.totalFine > 0 || r.lateMin > 0 || r.earlyMin > 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: _hasDetail ? () => setState(() => _open = !_open) : null,
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: _header(),
+            ),
+          ),
+          if (_open) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+              child: _detail(),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 
-  String _timeOnly(String? iso) {
-    if (iso == null || iso.isEmpty) return '--';
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return iso;
-    final l = dt.toLocal();
-    final h = l.hour % 12 == 0 ? 12 : l.hour % 12;
-    final m = l.minute.toString().padLeft(2, '0');
-    return '$h:$m ${l.hour < 12 ? 'AM' : 'PM'}';
+  Widget _header() {
+    final fineColor = r.totalFine > 0 ? AppColors.danger : AppColors.textMuted;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Row(
+                children: [
+                  Text(_fmtDate(r.date),
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.textDark)),
+                  const SizedBox(width: 8),
+                  Text(_weekday(r.date), style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                ],
+              ),
+            ),
+            Text(r.status ?? '-', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.textMuted)),
+            if (_hasDetail)
+              Padding(
+                padding: const EdgeInsets.only(left: 6),
+                child: Icon(_open ? Icons.expand_less : Icons.expand_more, size: 20, color: AppColors.textMuted),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            _miniStat('IN', _fmtTime(r.punchIn), AppColors.success),
+            _miniStat('OUT', _fmtTime(r.punchOut), AppColors.danger),
+            _miniStat('FINE', _fmtMoney(r.totalFine), fineColor),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _miniStat(String label, String value, Color color) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: AppColors.textMuted)),
+          const SizedBox(height: 2),
+          Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: color)),
+        ],
+      ),
+    );
+  }
+
+  Widget _detail() {
+    final sections = <Widget>[];
+
+    // Breaks
+    if (r.breaks.isNotEmpty) {
+      sections.add(_sectionTitle('Breaks', '${r.breakCount} · ${r.breakMin}m'));
+      for (var i = 0; i < r.breaks.length; i++) {
+        final b = r.breaks[i];
+        sections.add(_detailRow(
+          'Break ${i + 1}',
+          '${_fmtTime(b.start)} – ${_fmtTime(b.end)} · ${b.durationMin}m',
+          b.fine > 0 ? 'Fine ${_fmtMoney(b.fine)}' : null,
+        ));
+      }
+    }
+
+    // Permission
+    final p = r.permission;
+    if (!p.isEmpty) {
+      if (sections.isNotEmpty) sections.add(const SizedBox(height: 10));
+      sections.add(_sectionTitle('Permission', p.consumedMin > 0 ? '${p.consumedMin}m used' : ''));
+      if (p.lateMin > 0) sections.add(_detailRow('Late-in permission', '${p.lateMin}m', null));
+      if (p.earlyMin > 0) sections.add(_detailRow('Early-out permission', '${p.earlyMin}m', null));
+      if (p.approvedMin > 0) sections.add(_detailRow('Approved', '${p.approvedMin}m', null));
+      if (p.remainingMin > 0) sections.add(_detailRow('Remaining', '${p.remainingMin}m', null));
+      if (p.fineMin > 0 || p.fineAmount > 0) {
+        sections.add(_detailRow('Exceeded', '${p.fineMin}m', p.fineAmount > 0 ? 'Fine ${_fmtMoney(p.fineAmount)}' : null));
+      }
+    }
+
+    // Fine breakdown
+    final fineRows = <Widget>[];
+    if (r.lateMin > 0) fineRows.add(_detailRow('Late', '${r.lateMin}m', null));
+    if (r.earlyMin > 0) fineRows.add(_detailRow('Early out', '${r.earlyMin}m', null));
+    if (r.breakFine > 0 || r.breakFineMin > 0) {
+      fineRows.add(_detailRow('Break fine', '${r.breakFineMin}m', _fmtMoney(r.breakFine)));
+    }
+    if (r.permission.fineAmount > 0 || r.permission.fineMin > 0) {
+      fineRows.add(_detailRow('Permission fine', '${r.permission.fineMin}m', _fmtMoney(r.permission.fineAmount)));
+    }
+    if (fineRows.isNotEmpty || r.totalFine > 0) {
+      if (sections.isNotEmpty) sections.add(const SizedBox(height: 10));
+      sections.add(_sectionTitle('Fine', _fmtMoney(r.totalFine)));
+      sections.addAll(fineRows);
+    }
+
+    if (sections.isEmpty) {
+      return const Text('No break, permission or fine for this day.',
+          style: TextStyle(fontSize: 12, color: AppColors.textMuted));
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: sections);
+  }
+
+  Widget _sectionTitle(String title, String trailing) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(title.toUpperCase(),
+              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: AppColors.primary)),
+          if (trailing.isNotEmpty)
+            Text(trailing, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.textDark)),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value, String? trailing) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 140,
+            child: Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textDark)),
+          ),
+          if (trailing != null)
+            Text(trailing, style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.danger)),
+        ],
+      ),
+    );
   }
 }

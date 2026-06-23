@@ -33,6 +33,64 @@ class EnrolledEmployee {
       );
 }
 
+/// One break session within a day (start/end/duration/fine), shown when a day
+/// card is expanded in the detail screen.
+class BreakSession {
+  final String? start;
+  final String? end;
+  final int durationMin;
+  final int fineMin;
+  final double fine;
+
+  BreakSession({this.start, this.end, this.durationMin = 0, this.fineMin = 0, this.fine = 0});
+
+  factory BreakSession.fromJson(Map<String, dynamic> j) => BreakSession(
+        start: j['start']?.toString(),
+        end: j['end']?.toString(),
+        durationMin: j['duration_min'] is num ? (j['duration_min'] as num).toInt() : 0,
+        fineMin: j['fine_min'] is num ? (j['fine_min'] as num).toInt() : 0,
+        fine: j['fine'] is num ? (j['fine'] as num).toDouble() : 0,
+      );
+}
+
+/// Permission usage + fine for a day (custom step-outs / late-in / early-out).
+class PermissionDetail {
+  final int consumedMin;
+  final int approvedMin;
+  final int remainingMin;
+  final int lateMin;
+  final int earlyMin;
+  final int fineMin;
+  final double fineAmount;
+
+  PermissionDetail({
+    this.consumedMin = 0,
+    this.approvedMin = 0,
+    this.remainingMin = 0,
+    this.lateMin = 0,
+    this.earlyMin = 0,
+    this.fineMin = 0,
+    this.fineAmount = 0,
+  });
+
+  /// True when there's nothing meaningful to show for this day.
+  bool get isEmpty =>
+      consumedMin == 0 && approvedMin == 0 && lateMin == 0 && earlyMin == 0 && fineMin == 0 && fineAmount == 0;
+
+  factory PermissionDetail.fromJson(Map<String, dynamic> j) {
+    int i(dynamic v) => v is num ? v.toInt() : 0;
+    return PermissionDetail(
+      consumedMin: i(j['consumed_min']),
+      approvedMin: i(j['approved_min']),
+      remainingMin: i(j['remaining_min']),
+      lateMin: i(j['late_min']),
+      earlyMin: i(j['early_min']),
+      fineMin: i(j['fine_min']),
+      fineAmount: j['fine_amount'] is num ? (j['fine_amount'] as num).toDouble() : 0,
+    );
+  }
+}
+
 /// One attendance day row (today or a month entry) in the detail screen.
 class AttendanceRow {
   final String? date;
@@ -43,8 +101,13 @@ class AttendanceRow {
   final int breakMin;
   final int breakCount;
   final double breakFine;
+  final int breakFineMin;
   final int lateMin;
+  final int earlyMin;
   final double fine;
+  final double totalFine;
+  final List<BreakSession> breaks;
+  final PermissionDetail permission;
 
   AttendanceRow({
     this.date,
@@ -55,9 +118,14 @@ class AttendanceRow {
     this.breakMin = 0,
     this.breakCount = 0,
     this.breakFine = 0,
+    this.breakFineMin = 0,
     this.lateMin = 0,
+    this.earlyMin = 0,
     this.fine = 0,
-  });
+    this.totalFine = 0,
+    this.breaks = const [],
+    PermissionDetail? permission,
+  }) : permission = permission ?? PermissionDetail();
 
   static int _i(dynamic v) => v is num ? v.toInt() : 0;
   static double _d(dynamic v) => v is num ? v.toDouble() : 0;
@@ -71,8 +139,18 @@ class AttendanceRow {
         breakMin: _i(j['break_min']),
         breakCount: _i(j['break_count']),
         breakFine: _d(j['break_fine']),
+        breakFineMin: _i(j['break_fine_min']),
         lateMin: _i(j['late_min']),
+        earlyMin: _i(j['early_min']),
         fine: _d(j['fine']),
+        totalFine: _d(j['total_fine']),
+        breaks: (j['breaks'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(BreakSession.fromJson)
+            .toList(),
+        permission: (j['permission'] is Map<String, dynamic>)
+            ? PermissionDetail.fromJson(j['permission'] as Map<String, dynamic>)
+            : null,
       );
 }
 
