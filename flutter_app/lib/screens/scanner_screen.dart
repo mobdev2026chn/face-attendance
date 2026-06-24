@@ -312,6 +312,29 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
     );
   }
 
+  /// Notify the permission result after a kiosk Permission Out / In. EHRMS owns the
+  /// wording: Permission In returns "...exceeded by N minutes" (overrun fine) when the
+  /// employee was out longer than the approved custom window; otherwise it's neutral.
+  void _notifyPermissionAction(ScanResult r) {
+    if (r.action != 'Permission-Out' && r.action != 'Permission-In') return;
+    final notice = r.permissionNotice;
+    final hasNotice = notice != null && notice.trim().isNotEmpty;
+    final isOut = r.action == 'Permission-Out';
+    final msg = isOut
+        ? (hasNotice ? notice : 'Permission step-out recorded. Scan again to return.')
+        : (hasNotice ? notice : 'Permission return recorded.');
+    // Highlight only when EHRMS charged a fine (overrun beyond the approved time).
+    final highlight = hasNotice && notice.toLowerCase().contains('fine');
+    if (highlight) FeedbackSound.warn();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: highlight ? AppColors.danger : null,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
   /// Surface the EHRMS fine + overtime policy on a real punch (in/out). EHRMS is the
   /// single source of truth: it computes late/early/break/permission fine and overtime
   /// against the shift allocated for THAT day. The kiosk only displays the result.
@@ -564,6 +587,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
       });
       FeedbackSound.success();
       _notifyBreakPolicy(result);
+      _notifyPermissionAction(result);
       _addFaceSample(result, _lastCapturedImageBase64);
       Future.delayed(const Duration(seconds: 5), () {
         if (!mounted) return;
@@ -1032,6 +1056,27 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
                 ),
               ],
             ),
+            // Custom-permission step-out / return — shown only when the employee has
+            // an actionable permission for today (created in the EHRMS app). EHRMS
+            // fines any time beyond the approved window on Permission In.
+            if (employee.permissionPhase == 'out' || employee.permissionPhase == 'in') ...[
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isLoading
+                      ? null
+                      : () => _handleSubsequentAction(
+                            employee.permissionPhase == 'out' ? 'permission_out' : 'permission_in',
+                            employee.permissionPhase == 'out'
+                                ? 'PERMISSION OUT RECORDED'
+                                : 'PERMISSION IN RECORDED',
+                          ),
+                  icon: const Icon(Icons.meeting_room_outlined, size: 18),
+                  label: Text(employee.permissionPhase == 'out' ? 'Permission Out' : 'Permission In'),
+                ),
+              ),
+            ],
           ],
           if (employee.action == 'On-Break-Scan') ...[
             const SizedBox(height: 14),

@@ -34,6 +34,15 @@ class ScanResult {
   /// "...exceeded by N minutes"), when the punch response carries one.
   final String? permissionNotice;
 
+  /// Today's actionable CUSTOM permission (type "both") for the recognized,
+  /// punched-in employee, used to offer Permission Out / In at the kiosk:
+  ///   permissionPhase == 'out' → stepped-out not yet recorded (show "Permission Out")
+  ///   permissionPhase == 'in'  → out recorded, return pending (show "Permission In")
+  ///   null                     → no actionable permission today.
+  /// [permissionId] is the PermissionRequest id the out/in action stamps.
+  final String? permissionId;
+  final String? permissionPhase;
+
   ScanResult({
     required this.employeeId,
     required this.employeeName,
@@ -58,6 +67,8 @@ class ScanResult {
     this.overtimeAmount,
     this.overtimeNotice,
     this.permissionNotice,
+    this.permissionId,
+    this.permissionPhase,
   });
 
   factory ScanResult.fromJson(Map<String, dynamic> json) {

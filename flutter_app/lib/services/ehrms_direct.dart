@@ -110,6 +110,53 @@ class EhrmsDirect {
     return res;
   }
 
+  static bool _isToday(dynamic isoDate) {
+    if (isoDate == null) return false;
+    final d = DateTime.tryParse(isoDate.toString());
+    if (d == null) return false;
+    final local = d.toLocal();
+    final n = DateTime.now();
+    return local.year == n.year && local.month == n.month && local.day == n.day;
+  }
+
+  /// Today's actionable CUSTOM (type "both") permission for the recognized
+  /// employee, used to offer Permission Out / In at the kiosk. Returns the request
+  /// id + phase:
+  ///   'out'  → step-out not yet recorded (offer "Permission Out")
+  ///   'in'   → out recorded, return pending (offer "Permission In")
+  ///   'none' → nothing actionable today.
+  /// Best-effort — any error resolves to 'none' so the option just doesn't show.
+  Future<({String? id, String phase})> _resolveTodayPermission() async {
+    try {
+      final now = DateTime.now();
+      final res = await _send(
+        'GET',
+        '/requests/permission?month=${now.month}&year=${now.year}',
+      );
+      if (res.statusCode != 200) return (id: null, phase: 'none');
+      final data = _json(res)['data'];
+      final list = (data is Map && data['permissions'] is List)
+          ? data['permissions'] as List
+          : const [];
+      for (final p in list) {
+        if (p is! Map) continue;
+        // Only custom-window permissions have an out/in lifecycle (+ overrun fine).
+        if ((p['type'] ?? '').toString() != 'both') continue;
+        final st = (p['status'] ?? '').toString().toLowerCase();
+        if (st != 'pending' && st != 'approved') continue;
+        if (!_isToday(p['date'])) continue;
+        final id = (p['_id'] ?? p['id'])?.toString();
+        if (id == null || id.isEmpty) continue;
+        final hasOut = p['actualOutAt']?.toString().isNotEmpty ?? false;
+        final hasIn = p['actualInAt']?.toString().isNotEmpty ?? false;
+        if (!hasOut) return (id: id, phase: 'out');
+        if (!hasIn) return (id: id, phase: 'in');
+        // Both stamped → completed; keep scanning for another actionable one.
+      }
+    } catch (_) {/* best-effort: no permission option shown */}
+    return (id: null, phase: 'none');
+  }
+
   Map<String, dynamic> _json(http.Response res) {
     try {
       return jsonDecode(res.body) as Map<String, dynamic>;
@@ -172,7 +219,15 @@ class EhrmsDirect {
 
     final name = face.employeeName;
     final status = (att?['status'] ?? 'Present').toString();
-    ScanResult build(String act, {String? ci, String? co}) => ScanResult(
+    ScanResult build(
+      String act, {
+      String? ci,
+      String? co,
+      String? permissionId,
+      String? permissionPhase,
+      String? permissionNotice,
+    }) =>
+        ScanResult(
           employeeId: face.employeeId,
           employeeName: name,
           department: face.department,
@@ -183,6 +238,9 @@ class EhrmsDirect {
           confidence: face.confidence,
           checkInTime: ci,
           checkOutTime: co,
+          permissionId: permissionId,
+          permissionPhase: permissionPhase,
+          permissionNotice: permissionNotice,
         );
 
     // 2. Status-only actions (no write).
@@ -193,7 +251,67 @@ class EhrmsDirect {
       return build('On-Break-Scan', ci: _fmt(att?['punchIn']?.toString()));
     }
     if (action == 'Already-Checked-In') {
-      return build('Already-Checked-In', ci: _fmt(att?['punchIn']?.toString()));
+      // Resolve today's actionable custom permission so the kiosk can offer
+      // Permission Out / In (mirrors the break out/in buttons).
+      final perm = await _resolveTodayPermission();
+      return build(
+        'Already-Checked-In',
+        ci: _fmt(att?['punchIn']?.toString()),
+        permissionId: perm.id,
+        permissionPhase: perm.phase,
+      );
+    }
+
+    // 2b. Permission Out / In for today's custom (type "both") permission — same
+    // step-out / return lifecycle as break. The employee creates the custom
+    // permission in the EHRMS app; the kiosk only stamps the actual out/in and
+    // EHRMS fines any time beyond the approved window (permissionIn computes the
+    // overrun and returns the "...exceeded by N minutes" notice).
+    if (action == 'permission_out' || action == 'permission_in') {
+      if (!hasPunchIn) {
+        throw ApiException('Hello $name, you must Punch IN first before a permission.');
+      }
+      if (hasPunchOut) {
+        throw ApiException('Hello $name, you have already Punched OUT today.');
+      }
+      final perm = await _resolveTodayPermission();
+      final isOut = action == 'permission_out';
+      if (perm.id == null) {
+        throw ApiException(isOut
+            ? 'Hello $name, no permission found to step out for today.'
+            : 'Hello $name, no active permission to return from.');
+      }
+      if (isOut && perm.phase != 'out') {
+        throw ApiException('Hello $name, your permission step-out is already recorded.');
+      }
+      if (!isOut && perm.phase != 'in') {
+        throw ApiException('Hello $name, please record Permission Out before Permission In.');
+      }
+      final pRes = await _send(
+        'POST',
+        '/requests/permission/${perm.id}/${isOut ? 'out' : 'in'}',
+        body: {'selfie': selfie},
+      );
+      if (pRes.statusCode < 200 || pRes.statusCode >= 300) {
+        throw ApiException(_detail(pRes, 'Permission ${isOut ? 'Out' : 'In'} failed.'));
+      }
+      final pBody = _json(pRes);
+      String? permNotice = (pBody['notice'] is String && (pBody['notice'] as String).trim().isNotEmpty)
+          ? pBody['notice'] as String
+          : null;
+      final actualMin = (pBody['actualMinutes'] is num) ? (pBody['actualMinutes'] as num).toInt() : null;
+      if (!isOut && permNotice == null && actualMin != null) {
+        permNotice = 'Permission used: $actualMin min — within the approved time.';
+      }
+      // Re-resolve so the card flips Out→In (or clears the option after return).
+      final after = await _resolveTodayPermission();
+      return build(
+        isOut ? 'Permission-Out' : 'Permission-In',
+        ci: _fmt(att?['punchIn']?.toString()),
+        permissionId: after.id,
+        permissionPhase: after.phase,
+        permissionNotice: permNotice,
+      );
     }
 
     // 3. Validate writes (mirror backend guards).
