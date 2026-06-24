@@ -1299,12 +1299,15 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
     const token = data.accessToken;
     const myEmail = String(ehrms_email).trim().toLowerCase();
 
+    const myEmpId = String(data.user?.employeeId || '').trim().toLowerCase();
+
     // 1.5) VALIDATION: refuse if THIS account already has a face enrolled. The kiosk
     // self-enroll is only for not-yet-enrolled people; an already-enrolled account
     // must be cleared by an admin before re-enrolling (prevents silent overwrite and
     // accidental double-enroll from the credentials screen).
     try {
       const status = await ehrms.faceEnrollStatus(token);
+      console.log(`[kiosk-enroll] enroll-status for ${myEmail}: enrolled=${status?.enrolled} samples=${status?.samples}`);
       if (status && status.enrolled) {
         const user = data.user || {};
         const who = user.name || ehrms_email;
@@ -1315,18 +1318,27 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
       }
     } catch (e) {
       // Status is a guard, not the enroll itself; if EHRMS is unreachable, fail clearly.
+      console.error(`[kiosk-enroll] enroll-status check failed for ${myEmail}:`, e.message);
       return res.status(e.status === 503 ? 503 : 502).json({ detail: ehrmsErrMsg(e) });
     }
 
     // 2) GUARD: make sure this face isn't already enrolled against ANOTHER user.
     // identify-face runs the canonical 1-to-many match; a hit on a DIFFERENT person
     // means the face is taken — block (anti buddy-enroll). A hit on the SAME person
-    // is fine (they're just (re)enrolling their own face).
+    // is fine (they're just (re)enrolling their own face). "Same person" is decided by
+    // employeeId OR email — comparing email alone silently passed when the matched
+    // staff had no/blank email or used a different login email than Staff.email.
     try {
       const ident = await ehrms.identifyFace(images[0]);
+      console.log(`[kiosk-enroll] identify for ${myEmail}: matched=${ident?.matched} as=${ident?.email || ident?.employee_id || '-'} reason=${ident?.reason || '-'}`);
       if (ident && ident.matched) {
         const matchEmail = String(ident.email || '').trim().toLowerCase();
-        if (matchEmail && matchEmail !== myEmail) {
+        const matchEmpId = String(ident.employee_id || '').trim().toLowerCase();
+        const sameByEmail = !!matchEmail && matchEmail === myEmail;
+        const sameByEmpId = !!matchEmpId && !!myEmpId && matchEmpId === myEmpId;
+        // The face matched an enrolled person who is NEITHER my email NOR my employee id
+        // → it's someone else's face. Block (anti buddy-enroll).
+        if (!sameByEmail && !sameByEmpId) {
           return res.status(409).json({
             detail: `This face is already enrolled to ${ident.employee_name || 'another employee'}. It can't be registered to a different account.`,
             code: 'face_taken',
@@ -1337,6 +1349,7 @@ app.post('/api/employees/kiosk-enroll', async (req, res) => {
       }
     } catch (e) {
       // Identify is a guard, not the enroll itself; if EHRMS is unreachable, fail clearly.
+      console.error(`[kiosk-enroll] identify check failed for ${myEmail}:`, e.message);
       return res.status(e.status === 503 ? 503 : 502).json({ detail: ehrmsErrMsg(e) });
     }
 
