@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../main.dart';
 import '../config/selfie_orientation.dart';
@@ -25,9 +26,10 @@ class ScannerScreen extends StatefulWidget {
   State<ScannerScreen> createState() => _ScannerScreenState();
 }
 
-class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
+class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsBindingObserver {
   CameraController? _cameraController;
   String? _cameraError;
+  bool _cameraPermanentlyDenied = false;
 
   Timer? _scanTimer;
 
@@ -55,8 +57,18 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initCamera();
     _updateLocation();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-acquire the camera when returning to the app (e.g. after granting
+    // permission from system Settings) if it isn't running yet.
+    if (state == AppLifecycleState.resumed && _cameraController == null) {
+      _initCamera();
+    }
   }
 
   @override
@@ -67,6 +79,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     routeObserver.unsubscribe(this);
     _scanTimer?.cancel();
     _cameraController?.dispose();
@@ -89,7 +102,28 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
   }
 
   Future<void> _initCamera() async {
-    setState(() => _cameraError = null);
+    setState(() {
+      _cameraError = null;
+      _cameraPermanentlyDenied = false;
+    });
+
+    // The camera plugin does not request runtime permission itself — it throws
+    // CameraAccessDenied if CAMERA isn't already granted. Ask for it first.
+    var status = await Permission.camera.status;
+    if (!status.isGranted) {
+      status = await Permission.camera.request();
+    }
+    if (!status.isGranted) {
+      if (!mounted) return;
+      setState(() {
+        _cameraPermanentlyDenied = status.isPermanentlyDenied || status.isRestricted;
+        _cameraError = _cameraPermanentlyDenied
+            ? 'Camera permission is blocked.\nEnable it in Settings to mark attendance.'
+            : 'Camera Access Required\nPlease allow camera access to mark attendance.';
+      });
+      return;
+    }
+
     try {
       final cameras = await availableCameras();
       final frontCamera = cameras.firstWhere(
@@ -720,7 +754,26 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware {
         child: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
-            child: Text(_cameraError!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.no_photography_outlined, color: AppColors.primary, size: 48),
+                const SizedBox(height: 16),
+                Text(_cameraError!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                  onPressed: () {
+                    if (_cameraPermanentlyDenied) {
+                      openAppSettings();
+                    } else {
+                      _initCamera();
+                    }
+                  },
+                  child: Text(_cameraPermanentlyDenied ? 'Open Settings' : 'Allow Camera Access'),
+                ),
+              ],
+            ),
           ),
         ),
       );
