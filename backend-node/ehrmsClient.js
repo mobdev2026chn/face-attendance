@@ -8,7 +8,7 @@
 
 const EHRMS_BASE_URL = (process.env.EHRMS_BASE_URL || 'http://127.0.0.1:9001').replace(/\/+$/, '');
 // Web host that serves the staff directory (/api/staff) — separate from the geo/attendance host.
-const EHRMS_WEB_BASE_URL = (process.env.EHRMS_WEB_BASE_URL || 'https://hrms.askeva.net').replace(/\/+$/, '');
+const EHRMS_WEB_BASE_URL = (process.env.EHRMS_WEB_BASE_URL || 'https://uat.ektahr.com').replace(/\/+$/, '');
 
 // Node 18+ ships a global fetch; this backend runs on Node 24.
 // `base` overrides the host (e.g. the web host for the staff directory).

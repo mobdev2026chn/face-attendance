@@ -56,3 +56,11 @@ backend-node/cia.json
 
 *.log
 .claude/
+
+# Flutter build & caches
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/

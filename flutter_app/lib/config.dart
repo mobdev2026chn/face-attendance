@@ -11,4 +11,4 @@ const String kBackendUrl = 'https://eface.askeva.io/api';
 // ALWAYS the DEV server (ehrms.askeva.net = EHRMS's development host) — never the
 // production host (app.ektahr.com) and never the value returned by the face backend,
 // so a stale/empty ehrms_base_url can never break or mis-route attendance writes.
-const String kEhrmsBaseUrl = 'https://ehrms.askeva.net';
+const String kEhrmsBaseUrl = 'https://uat.ektahr.com';

@@ -20,6 +20,7 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   late Future<List<EnrolledEmployee>> _future;
   String _query = '';
+  int _displayedCount = 15;
 
   @override
   void initState() {
@@ -27,7 +28,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _future = ApiService.fetchEnrolledEmployees();
   }
 
-  void _refresh() => setState(() => _future = ApiService.fetchEnrolledEmployees());
+  void _refresh() => setState(() {
+    _displayedCount = 15;
+    _future = ApiService.fetchEnrolledEmployees();
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     hintText: 'Search name, ID, department…',
                     prefixIcon: Icon(Icons.search),
                   ),
-                  onChanged: (v) => setState(() => _query = v),
+                  onChanged: (v) => setState(() {
+                    _query = v;
+                    _displayedCount = 15;
+                  }),
                 ),
                 const SizedBox(height: 18),
                 const Text('ENROLLED EMPLOYEES · EHRMS',
@@ -83,8 +90,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _emptyOrError('No one has enrolled their face in EHRMS yet.')
                 else if (list.isEmpty)
                   _emptyOrError('No matching employees.')
-                else
-                  ...list.map(_tile),
+                else ...[
+                  ...list.take(_displayedCount).map(_tile),
+                  if (list.length > _displayedCount)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 24),
+                      child: Center(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _displayedCount += 15;
+                            });
+                          },
+                          icon: const Icon(Icons.expand_more_rounded, size: 18),
+                          label: Text(
+                            'Load More (${list.length - _displayedCount} remaining)',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.primary,
+                            side: BorderSide(color: AppColors.primary.withValues(alpha: 0.3)),
+                            backgroundColor: AppColors.primary.withValues(alpha: 0.05),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ],
             );
           },
