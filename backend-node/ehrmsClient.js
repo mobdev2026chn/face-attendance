@@ -6,7 +6,7 @@
 //  login -> Bearer token -> /api/attendance + /api/breaks.
 // ============================================================
 
-const EHRMS_BASE_URL = (process.env.EHRMS_BASE_URL || 'http://127.0.0.1:9001').replace(/\/+$/, '');
+const EHRMS_BASE_URL = (process.env.EHRMS_BASE_URL || 'https://uat.ektahr.com').replace(/\/+$/, '');
 // Web host that serves the staff directory (/api/staff) — separate from the geo/attendance host.
 const EHRMS_WEB_BASE_URL = (process.env.EHRMS_WEB_BASE_URL || 'https://uat.ektahr.com').replace(/\/+$/, '');
 
