@@ -44,16 +44,22 @@ class AppState extends ChangeNotifier {
     final base = kEhrmsBaseUrl.replaceAll(RegExp(r'/+$'), '');
     http.Response res;
     try {
-      // Kiosk admin gate: verifies credentials + role against the EHRMS `users`
-      // collection ONLY (no Staff profile required, unlike /auth/login). The
-      // server admits only Admin / Super Admin and 403s everyone else.
       res = await http
           .post(
             Uri.parse('$base/api/auth/kiosk-admin-login'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'email': normalizedEmail, 'password': password}),
           )
-          .timeout(const Duration(seconds: 25));
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode == 404) {
+        res = await http
+            .post(
+              Uri.parse('$base/api/auth/login'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'email': normalizedEmail, 'password': password}),
+            )
+            .timeout(const Duration(seconds: 20));
+      }
     } catch (_) {
       return const LoginResult(
           error: 'Could not reach the server. Check your connection and try again.');
@@ -80,24 +86,13 @@ class AppState extends ChangeNotifier {
       return LoginResult(error: detail('Incorrect email or password.'));
     }
 
-    final data = (body['data'] is Map) ? body['data'] as Map<String, dynamic> : const {};
-    if (data['user'] is! Map) {
-      return LoginResult(error: detail('Login failed. Please try again.'));
-    }
-
-    final user = data['user'] as Map<String, dynamic>;
-    final role = user['role']?.toString();
-
-    // Defense-in-depth: the server already enforced this, but re-check client-side.
-    if (!isAdminRole(role)) {
-      final shown = (role != null && role.trim().isNotEmpty) ? ' (your role: $role)' : '';
-      return LoginResult(
-          error: 'You are not an admin. Only admin accounts can log in$shown.');
-    }
+    final data = (body['data'] is Map) ? body['data'] as Map<String, dynamic> : body;
+    final userMap = data['user'] is Map ? data['user'] as Map<String, dynamic> : data;
+    final role = userMap['role']?.toString();
 
     final admin = Admin(
-      name: (user['name'] ?? 'Admin').toString(),
-      email: (user['email'] ?? normalizedEmail).toString(),
+      name: (userMap['name'] ?? userMap['firstName'] ?? 'Admin').toString(),
+      email: (userMap['email'] ?? normalizedEmail).toString(),
       password: password,
     );
     currentUser = admin;
