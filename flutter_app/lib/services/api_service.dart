@@ -99,15 +99,33 @@ class ApiService {
     String pincode = '',
   }) async {
     // 1. Resolve WHO via the face backend (biometric match) + get their EHRMS token.
-    final resolveRes = await http.post(
-      Uri.parse('$kBackendUrl/attendance/resolve-face'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'image_base64': imageBase64}),
-    );
-    final rdata = jsonDecode(resolveRes.body) as Map<String, dynamic>;
+    http.Response resolveRes;
+    try {
+      resolveRes = await http.post(
+        Uri.parse('$kBackendUrl/attendance/resolve-face'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'image_base64': imageBase64}),
+      );
+      if (resolveRes.statusCode == 404) {
+        resolveRes = await http.post(
+          Uri.parse('$kBackendUrl/attendance/verify-identity'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'image_base64': imageBase64}),
+        );
+      }
+    } catch (e) {
+      throw ApiException('Could not reach face recognition server ($e)');
+    }
 
-    if (resolveRes.statusCode == 200 && rdata['linked'] == true) {
-      // 2. Punch/break straight against EHRMS (ehrms.askeva.net/api) from the app.
+    Map<String, dynamic> rdata;
+    try {
+      rdata = jsonDecode(resolveRes.body) as Map<String, dynamic>;
+    } catch (_) {
+      rdata = {};
+    }
+
+    if (resolveRes.statusCode == 200 && (rdata['linked'] == true || rdata['verified'] == true)) {
+      // 2. Punch/break straight against EHRMS (uat.ektahr.com/api) from the app.
       final face = FaceResolve.fromJson(rdata);
       return EhrmsDirect(face).punch(
         requestedAction: action,
@@ -120,10 +138,8 @@ class ApiService {
         pincode: pincode,
       );
     }
-    // Recognized but NOT linked to EHRMS (409) → no local fallback (EHRMS/dev only).
-    // The detail ("… is recognized but not linked …") routes the scanner to the
-    // link/enroll flow, which links the live capture to a dev account.
-    throw ApiException(rdata['detail']?.toString() ?? 'Face scanning failed.');
+    final detailMsg = (rdata['detail'] ?? rdata['message'] ?? rdata['reason'] ?? 'Face not recognized. Align your face inside the guide.').toString();
+    throw ApiException(detailMsg);
   }
 
   static Future<void> addEmployee({
