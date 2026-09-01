@@ -108,8 +108,29 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-      final controller = CameraController(frontCamera, ResolutionPreset.medium, enableAudio: false);
-      await controller.initialize();
+
+      CameraController? controller;
+      final presets = [ResolutionPreset.medium, ResolutionPreset.low, ResolutionPreset.high];
+      for (final preset in presets) {
+        try {
+          final c = CameraController(
+            frontCamera,
+            preset,
+            enableAudio: false,
+            imageFormatGroup: ImageFormatGroup.jpeg,
+          );
+          await c.initialize();
+          controller = c;
+          break;
+        } catch (_) {}
+      }
+
+      if (controller == null) {
+        final c = CameraController(frontCamera, ResolutionPreset.low, enableAudio: false);
+        await c.initialize();
+        controller = c;
+      }
+
       if (!mounted) return;
       setState(() {
         _cameraController = controller;

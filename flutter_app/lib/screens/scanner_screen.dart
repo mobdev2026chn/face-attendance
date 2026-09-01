@@ -130,10 +130,34 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-      final controller = CameraController(frontCamera, ResolutionPreset.medium, enableAudio: false);
-      await controller.initialize();
+
+      CameraController? controller;
+      final presets = [ResolutionPreset.medium, ResolutionPreset.low, ResolutionPreset.high];
+      for (final preset in presets) {
+        try {
+          final c = CameraController(
+            frontCamera,
+            preset,
+            enableAudio: false,
+            imageFormatGroup: ImageFormatGroup.jpeg,
+          );
+          await c.initialize();
+          controller = c;
+          break;
+        } catch (_) {}
+      }
+
+      if (controller == null) {
+        final c = CameraController(frontCamera, ResolutionPreset.low, enableAudio: false);
+        await c.initialize();
+        controller = c;
+      }
+
       if (!mounted) return;
-      setState(() => _cameraController = controller);
+      setState(() {
+        _cameraController = controller;
+        _cameraError = null;
+      });
       _startScanLoop();
     } catch (e) {
       if (mounted) setState(() => _cameraError = 'Camera Access Required\n${e.toString()}');
