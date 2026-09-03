@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../main.dart';
 import '../config/selfie_orientation.dart';
@@ -14,6 +15,7 @@ import '../models/scan_result.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/avatar_orientation.dart';
+import '../utils/face_detection_helper.dart';
 import '../utils/feedback_sound.dart';
 import '../utils/selfie_normalize.dart';
 import '../widgets/app_drawer.dart';
@@ -212,7 +214,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     _scanTimer?.cancel();
     // Live recognition: continuously scan so a face in the guide is recognized and
     // punched automatically. Each scan is guarded by _isLoading (no overlap).
-    _scanTimer = Timer.periodic(const Duration(milliseconds: 800), (_) {
+    _scanTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (!_isLoading && !_cameraLocked && !_scanSuccessful) {
         _handleScanAttendance();
       }
@@ -251,12 +253,51 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
 
   Future<void> _handleScanAttendance() async {
     if (_cameraLocked) return;
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+
     setState(() => _isLoading = true);
 
     try {
-      final imageBase64 = await _captureImageBase64();
-      if (imageBase64 == null) return;
-      // Keep the capture so it can seed enrollment if the face isn't recognized (first punch).
+      final file = await controller.takePicture();
+
+      // On-Device ML Kit Face Pre-check directly from capture file (zero temp disk write overhead)
+      final det = await FaceDetectionHelper.detectFromFile(File(file.path));
+      if (det.faceCount == 0) {
+        // No face in frame: stay in calm idle state without server spam or red alarm
+        if (mounted) {
+          setState(() {
+            _ovalColor = AppColors.primary;
+            _guidanceText = 'Align Face Inside Guide';
+            _notRecognized = false;
+          });
+        }
+        return;
+      }
+
+      if (det.faceCount > 1) {
+        _errorSoundThrottled();
+        if (mounted) {
+          setState(() {
+            _ovalColor = AppColors.danger;
+            _guidanceText = 'Ensure Only 1 Face Visible';
+            _notRecognized = false;
+          });
+        }
+        return;
+      }
+
+      // Exactly 1 face is clearly in frame
+      if (mounted) {
+        setState(() {
+          _ovalColor = AppColors.success;
+          _guidanceText = 'Hold Still…';
+        });
+      }
+
+      final Uint8List bytes = await file.readAsBytes();
+      final Uint8List upright = await normalizeSelfieUpright(bytes);
+      final imageBase64 = base64Encode(upright);
       _lastCapturedImageBase64 = imageBase64;
 
       final result = await ApiService.scanAttendance(
@@ -453,31 +494,51 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
   }
 
   void _applyErrorGuidance(String errMsg) {
-    // Beep on errors (incl. "no face detected"), but throttle so the 500ms poll loop
-    // doesn't spam the sound while someone is positioning their face.
+    final lower = errMsg.toLowerCase();
+    final isNoFace = lower.contains('no face') || lower.contains('align your face');
+    if (isNoFace) {
+      // Idle / waiting state (same as HRMS app): keep calm primary color and guide prompt.
+      // Do not beep, do not turn red.
+      setState(() {
+        _ovalColor = AppColors.primary;
+        _guidanceText = 'Align Face Inside Guide';
+        _scanSuccessful = false;
+        _notRecognized = false;
+        _cameraLocked = false;
+      });
+      return;
+    }
+
     _errorSoundThrottled();
 
-    // An unrecognized face (not in EHRMS against any user) is the cue to offer
-    // at-kiosk enrollment — distinct from positioning/spoof guidance.
-    final notRecognized = errMsg.contains('not recognized') || errMsg.contains('Identity rejected');
+    final notRecognized = lower.contains('not recognized') ||
+        lower.contains('not_recognized') ||
+        lower.contains('not registered') ||
+        lower.contains('not enrolled') ||
+        lower.contains('not_enrolled') ||
+        lower.contains('unrecognized') ||
+        lower.contains('identity rejected') ||
+        lower.contains('no face enrolled') ||
+        lower.contains('unknown face') ||
+        lower.contains('no match');
 
     String guidance;
-    if (errMsg.contains('off-center horizontally')) {
+    if (lower.contains('off-center horizontally') || lower.contains('center horizontally')) {
       guidance = 'Align Center (Move Left/Right)';
-    } else if (errMsg.contains('off-center vertically')) {
+    } else if (lower.contains('off-center vertically') || lower.contains('center vertically')) {
       guidance = 'Align Center (Move Up/Down)';
-    } else if (errMsg.contains('too far')) {
+    } else if (lower.contains('too far')) {
       guidance = 'Come Front Little';
-    } else if (errMsg.contains('too close')) {
+    } else if (lower.contains('too close')) {
       guidance = 'Go Back Little';
-    } else if (errMsg.contains('Side angles')) {
+    } else if (lower.contains('side angle') || lower.contains('look straight')) {
       guidance = 'Look Straight at Camera';
-    } else if (errMsg.contains('Multiple faces')) {
+    } else if (lower.contains('multiple faces')) {
       guidance = 'Ensure Only 1 Face Visible';
-    } else if (errMsg.contains('Spoof Alert') || errMsg.contains('fake')) {
+    } else if (lower.contains('spoof') || lower.contains('fake')) {
       guidance = 'Spoof Alert! Fake Face Detected';
     } else if (notRecognized) {
-      guidance = 'Face Not Recognized — Enroll below';
+      guidance = 'You are not the registered person';
     } else {
       guidance = errMsg.isNotEmpty ? errMsg : 'Face Not Recognized. Retrying...';
     }
@@ -579,9 +640,13 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
   }
 
   /// Collect EHRMS credentials for at-kiosk enrollment. Returns null if cancelled.
-  Future<({String email, String password})?> _promptEhrmsCredentials() {
-    final emailC = TextEditingController();
-    final passC = TextEditingController();
+  Future<({String email, String password})?> _promptEhrmsCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedEmail = prefs.getString('admin_email') ?? '';
+    final savedPass = prefs.getString('admin_password') ?? '';
+    final emailC = TextEditingController(text: savedEmail);
+    final passC = TextEditingController(text: savedPass);
+    if (!mounted) return null;
     return showDialog<({String email, String password})>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -874,7 +939,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       child: Column(
         children: [
           const Text(
-            'Your face isn’t enrolled yet.',
+            'You are not the registered person / enrolled yet.',
             style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 10),

@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import '../models/admin.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 /// Outcome of an admin login attempt: [admin] on success, otherwise a
 /// human-readable [error] explaining why login was refused.
 class LoginResult {
@@ -22,6 +24,42 @@ class AppState extends ChangeNotifier {
   final List<Admin> _registeredAdmins = <Admin>[];
 
   Admin? currentUser;
+  String? authToken;
+
+  /// Restores saved session on app startup so login is not asked every time
+  Future<bool> tryAutoLogin() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      final email = prefs.getString('admin_email');
+      final name = prefs.getString('admin_name') ?? 'Admin';
+      final pass = prefs.getString('admin_password') ?? '';
+
+      if (token != null && token.isNotEmpty && email != null && email.isNotEmpty) {
+        authToken = token;
+        currentUser = Admin(name: name, email: email, password: pass);
+        notifyListeners();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Clears stored session on logout
+  Future<void> logout() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('auth_token');
+      await prefs.remove('refresh_token');
+      await prefs.remove('admin_name');
+      await prefs.remove('admin_email');
+      await prefs.remove('admin_password');
+      await prefs.remove('user_data');
+    } catch (_) {}
+    authToken = null;
+    currentUser = null;
+    notifyListeners();
+  }
 
   /// EHRMS `users.role` values allowed to operate the face kiosk. Login is
   /// admin-only: the dev DB holds exactly Admin / Super Admin / Employee /
@@ -88,7 +126,6 @@ class AppState extends ChangeNotifier {
 
     final data = (body['data'] is Map) ? body['data'] as Map<String, dynamic> : body;
     final userMap = data['user'] is Map ? data['user'] as Map<String, dynamic> : data;
-    final role = userMap['role']?.toString();
 
     final admin = Admin(
       name: (userMap['name'] ?? userMap['firstName'] ?? 'Admin').toString(),
@@ -96,6 +133,26 @@ class AppState extends ChangeNotifier {
       password: password,
     );
     currentUser = admin;
+
+    // Persist login token and session so user stays logged in
+    final token = (data['accessToken'] ?? data['token'] ?? body['token'] ?? body['accessToken'])?.toString();
+    final refreshToken = (data['refreshToken'] ?? body['refreshToken'])?.toString();
+    authToken = token;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (token != null && token.isNotEmpty) {
+        await prefs.setString('auth_token', token);
+      }
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        await prefs.setString('refresh_token', refreshToken);
+      }
+      await prefs.setString('admin_name', admin.name);
+      await prefs.setString('admin_email', admin.email);
+      await prefs.setString('admin_password', password);
+      await prefs.setString('user_data', jsonEncode(userMap));
+    } catch (_) {}
+
     notifyListeners();
     return LoginResult(admin: admin);
   }

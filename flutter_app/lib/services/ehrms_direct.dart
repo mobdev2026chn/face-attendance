@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 
 import '../config.dart';
 import '../models/scan_result.dart';
+import '../utils/selfie_normalize.dart' show compressForEhrmsPunch;
 import 'api_service.dart' show ApiException;
 
 /// Result of a face match from the face backend: identity + the matched employee's
@@ -358,10 +359,11 @@ class EhrmsDirect {
     // against EHRMS's rolling reference photo.
 
     // 4. Write DIRECTLY to EHRMS (include the full reverse-geocoded address).
+    final punchSelfie = compressForEhrmsPunch(selfie);
     final body = <String, dynamic>{
       'latitude': latitude,
       'longitude': longitude,
-      'selfie': selfie,
+      'selfie': punchSelfie,
       'source': 'software',
       if (address.isNotEmpty) 'address': address,
       if (area.isNotEmpty) 'area': area,
@@ -372,15 +374,27 @@ class EhrmsDirect {
     String label;
     if (action == 'in') {
       w = await _send('POST', '/attendance/checkin', body: body);
+      if (w.statusCode == 404) {
+        w = await _send('POST', '/staff/attendance/punch-in', body: body);
+      }
       label = 'Check-In';
     } else if (action == 'out') {
       w = await _send('PUT', '/attendance/checkout', body: body);
+      if (w.statusCode == 404) {
+        w = await _send('POST', '/staff/attendance/punch-out', body: body);
+      }
       label = 'Check-Out';
     } else if (action == 'break_in') {
       w = await _send('POST', '/breaks/start', body: body);
+      if (w.statusCode == 404) {
+        w = await _send('POST', '/staff/attendance/break/start', body: body);
+      }
       label = 'Break-In';
     } else {
       w = await _send('PATCH', '/breaks/$activeBreakId/end', body: body);
+      if (w.statusCode == 404) {
+        w = await _send('POST', '/staff/attendance/break/end', body: body);
+      }
       label = 'Break-Out';
     }
     if (w.statusCode < 200 || w.statusCode >= 300) {

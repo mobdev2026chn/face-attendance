@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -24,10 +26,21 @@ class _SplashScreenState extends State<SplashScreen> {
       return mounted;
     });
 
-    // Auto transition to login screen after 2.5s.
-    Future.delayed(const Duration(milliseconds: 2500), () {
-      if (mounted) Navigator.of(context).pushReplacementNamed('/login');
-    });
+    _checkLogin();
+  }
+
+  Future<void> _checkLogin() async {
+    final wait = Future.delayed(const Duration(milliseconds: 2000));
+    final autoLogin = context.read<AppState>().tryAutoLogin();
+    final results = await Future.wait([wait, autoLogin]);
+    final loggedIn = results[1] as bool;
+
+    if (!mounted) return;
+    if (loggedIn) {
+      Navigator.of(context).pushReplacementNamed('/scanner');
+    } else {
+      Navigator.of(context).pushReplacementNamed('/login');
+    }
   }
 
   @override

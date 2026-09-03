@@ -101,8 +101,9 @@ def process_image(input_data):
             scale = max_w / w
             img = cv2.resize(img, (0, 0), fx=scale, fy=scale)
 
-        # 1. Face Locations Detection
+        # 1. Face Locations Detection (direct fast live orientation)
         face_locations = face_recognition.face_locations(img)
+
         if len(face_locations) == 0:
             return {"error": "No face detected in feed. Please align your face inside the guide."}
         elif len(face_locations) > 1:

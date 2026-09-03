@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/selfie_normalize.dart';
 import '../widgets/face_guide_overlay.dart';
 
 class AdminScreen extends StatefulWidget {
@@ -149,7 +150,8 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
     try {
       final file = await controller.takePicture();
       final Uint8List bytes = await file.readAsBytes();
-      final imageBase64 = base64Encode(bytes);
+      final Uint8List upright = await normalizeSelfieUpright(bytes);
+      final imageBase64 = base64Encode(upright);
 
       await ApiService.enrollFace(employeeId: _idController.text.trim(), imageBase64: imageBase64);
 
