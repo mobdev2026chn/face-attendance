@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 
+/// Admin Panel gate: the signed-in admin re-enters their HRMS password, which is
+/// re-verified against `POST /auth/login` (must still be an admin).
 class PasscodeScreen extends StatefulWidget {
   const PasscodeScreen({super.key});
 
@@ -10,39 +14,52 @@ class PasscodeScreen extends StatefulWidget {
 }
 
 class _PasscodeScreenState extends State<PasscodeScreen> {
-  String _passcode = '';
+  final _passwordController = TextEditingController();
+  bool _showPassword = false;
+  bool _verifying = false;
 
-  void _onKeyTap(String key) {
-    setState(() {
-      if (key == 'CLEAR') {
-        _passcode = '';
-      } else if (key == 'BACK') {
-        if (_passcode.isNotEmpty) _passcode = _passcode.substring(0, _passcode.length - 1);
-      } else if (_passcode.length < 4) {
-        _passcode += key;
-      }
-    });
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    super.dispose();
   }
 
-  void _verify() {
-    if (_passcode == '1234') {
-      setState(() => _passcode = '');
+  Future<void> _verify() async {
+    if (_verifying) return;
+    final password = _passwordController.text;
+    if (password.isEmpty) {
+      _deny('Please enter your admin password.');
+      return;
+    }
+
+    setState(() => _verifying = true);
+    final error = await context.read<AppState>().verifyAdminPassword(password);
+    if (!mounted) return;
+    setState(() => _verifying = false);
+
+    if (error == null) {
+      _passwordController.clear();
       Navigator.of(context).pushReplacementNamed('/admin');
     } else {
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('Access Denied'),
-          content: const Text('Incorrect Admin Passkey!'),
-          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
-        ),
-      );
-      setState(() => _passcode = '');
+      _passwordController.clear();
+      _deny(error);
     }
+  }
+
+  void _deny(String message) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Access Denied'),
+        content: Text(message),
+        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final email = context.watch<AppState>().currentUser?.email ?? '';
     return Scaffold(
       backgroundColor: AppColors.darkBg,
       body: SafeArea(
@@ -73,84 +90,64 @@ class _PasscodeScreenState extends State<PasscodeScreen> {
                 ),
                 child: Column(
                   children: [
-                    const Text('Enter PIN', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
+                    const Text('Admin password', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 6),
-                    const Text('Verify your identity to proceed', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+                    Text(
+                      email.isNotEmpty ? 'Verify your identity to proceed\n$email' : 'Verify your identity to proceed',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+                    ),
                     const SizedBox(height: 20),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(4, (index) {
-                        final filled = index < _passcode.length;
-                        return Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 6),
-                          width: 12,
-                          height: 12,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: filled ? AppColors.primary : Colors.transparent,
-                            border: filled ? null : Border.all(color: AppColors.textMuted, width: 1.5),
-                          ),
-                        );
-                      }),
+                    TextField(
+                      controller: _passwordController,
+                      obscureText: !_showPassword,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      autofocus: true,
+                      style: const TextStyle(color: Colors.white),
+                      onSubmitted: (_) => _verify(),
+                      decoration: InputDecoration(
+                        hintText: 'Admin password',
+                        hintStyle: const TextStyle(color: AppColors.textMuted),
+                        prefixIcon: const Icon(Icons.lock_outline, color: AppColors.textMuted),
+                        suffixIcon: IconButton(
+                          icon: Icon(_showPassword ? Icons.visibility_off : Icons.visibility, color: AppColors.textMuted),
+                          onPressed: () => setState(() => _showPassword = !_showPassword),
+                        ),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.06),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+                        ),
+                      ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 30),
-              Expanded(
-                child: GridView.count(
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 1.4,
-                  children: [
-                    ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(_buildKey),
-                    _buildKey('CLEAR'),
-                    _buildKey('0'),
-                    _buildKey('BACK'),
-                  ],
-                ),
-              ),
+              const Spacer(),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _verify,
+                  onPressed: _verifying ? null : _verify,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-                  child: const Text('Unlock', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+                  child: _verifying
+                      ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : const Text('Unlock', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
                 ),
               ),
               const SizedBox(height: 20),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildKey(String key) {
-    final isSpecial = key == 'CLEAR' || key == 'BACK';
-    return Material(
-      color: isSpecial ? Colors.transparent : Colors.white.withValues(alpha: 0.06),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _onKeyTap(key),
-        child: Center(
-          child: key == 'BACK'
-              ? const Icon(Icons.backspace_outlined, color: Colors.white)
-              : Text(
-                  key,
-                  style: TextStyle(
-                    color: isSpecial ? AppColors.textMuted : Colors.white,
-                    fontSize: isSpecial ? 13 : 22,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
         ),
       ),
     );

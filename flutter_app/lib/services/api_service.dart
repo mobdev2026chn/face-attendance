@@ -1,449 +1,408 @@
+import 'dart:async';
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
-import '../models/attendance_record.dart';
-import '../models/scan_result.dart';
-import '../models/ehrms_overview.dart';
 import '../models/employee_directory.dart';
-import '../models/month_attendance.dart';
-import 'ehrms_direct.dart';
+import '../models/scan_result.dart';
 
+/// A request HRMS answered with an error (message is user-presentable).
 class ApiException implements Exception {
   final String message;
-  ApiException(this.message);
+  final int? statusCode;
+
+  /// HRMS machine reason, when sent (e.g. no_face, not_recognized, geofence).
+  final String? reason;
+
+  ApiException(this.message, {this.statusCode, this.reason});
 
   @override
   String toString() => message;
 }
 
-/// Thrown when enroll-and-link found no usable EHRMS face image (B failed) and a
-/// live kiosk capture is required to enroll (A).
+/// The server could not be reached or did not answer in time.
+class NetworkException extends ApiException {
+  NetworkException(super.message);
+}
+
+/// The admin session (bearer token) is no longer valid — the UI must log out.
+class SessionExpired implements Exception {
+  final String message;
+  SessionExpired([this.message = 'Your session has expired. Please sign in again.']);
+
+  @override
+  String toString() => message;
+}
+
+/// The face engine could not use the capture (no face / blurry / spoof) — retake it.
 class NeedsLiveCapture implements Exception {
   final String message;
   NeedsLiveCapture(this.message);
+
   @override
   String toString() => message;
 }
 
-class EnrolledUser {
-  final String id;
-  final String name;
-  final String date;
-  final int punches;
+/// Result of `POST /auth/login`.
+class LoginPayload {
+  final String token;
+  final Map<String, dynamic> user;
 
-  EnrolledUser({required this.id, required this.name, required this.date, required this.punches});
+  LoginPayload({required this.token, required this.user});
+
+  String get role => (user['role'] ?? '').toString().trim().toLowerCase();
+  bool get isAdmin => role == 'admin';
+  bool get isStaff => role == 'staff';
+  String get name => (user['name'] ?? user['firstName'] ?? '').toString();
+  String get email => (user['email'] ?? '').toString();
+  String? get id => user['id']?.toString() ?? user['_id']?.toString();
+  String? get adminId => user['adminId']?.toString();
 }
 
-class EnrolledFace {
-  final String employeeId;
-  final String fullName;
-  final bool ehrmsLinked;
-  final String? ehrmsEmail;
+class _Resp {
+  final int status;
+  final Map<String, dynamic> body;
+  _Resp(this.status, this.body);
 
-  EnrolledFace({required this.employeeId, required this.fullName, required this.ehrmsLinked, this.ehrmsEmail});
+  bool get ok => status >= 200 && status < 300 && body['success'] != false;
+  String? get reason => body['reason']?.toString();
 
-  factory EnrolledFace.fromJson(Map<String, dynamic> json) {
-    return EnrolledFace(
-      employeeId: (json['employeeId'] ?? '').toString(),
-      fullName: (json['fullName'] ?? '').toString(),
-      ehrmsLinked: json['ehrmsLinked'] == true,
-      ehrmsEmail: json['ehrmsEmail']?.toString(),
-    );
+  /// Consistent error extraction: `message`, then `detail`, then `error`.
+  String message(String fallback) {
+    for (final key in const ['message', 'detail', 'error']) {
+      final v = body[key];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+      if (v is Map && v['message'] is String && (v['message'] as String).trim().isNotEmpty) {
+        return (v['message'] as String).trim();
+      }
+    }
+    return fallback;
   }
 }
 
-/// A real employee from the dev EHRMS staff directory (for the link picker).
-class DevEmployee {
-  final String? employeeId;
-  final String name;
-  final String email;
-
-  DevEmployee({this.employeeId, required this.name, required this.email});
-
-  factory DevEmployee.fromJson(Map<String, dynamic> json) {
-    return DevEmployee(
-      employeeId: json['employeeId']?.toString(),
-      name: (json['name'] ?? '').toString(),
-      email: (json['email'] ?? '').toString(),
-    );
-  }
-}
-
-class DashboardStats {
-  final int totalEnrolled;
-  final int presentToday;
-
-  DashboardStats({required this.totalEnrolled, required this.presentToday});
-
-  factory DashboardStats.fromJson(Map<String, dynamic> json) {
-    return DashboardStats(
-      totalEnrolled: (json['total_enrolled'] ?? 0) as int,
-      presentToday: (json['present_today'] ?? 0) as int,
-    );
-  }
-}
-
+/// All kiosk traffic goes to the HRMS backend ([kApiBase]).
 class ApiService {
-  /// Face scan → punch/break. The face backend only matches the face and returns the
-  /// linked employee's EHRMS token; the punch/break get+post then go DIRECTLY to
-  /// https://ehrms.askeva.net/api from the app. Unlinked faces fall back to the local flow.
+  /// Bearer token of the signed-in kiosk admin. Set by AppState on
+  /// login / auto-login and cleared on logout.
+  static String? authToken;
+
+  static const Duration _defaultTimeout = Duration(seconds: 25);
+  // The face engine may be cold on the first request, so scans/enrolls get longer.
+  static const Duration _faceTimeout = Duration(seconds: 30);
+
+  /// Shared HTTP helper: JSON in/out, timeout, network-error mapping and (for admin
+  /// calls) 401 → [SessionExpired].
+  static Future<_Resp> _send(
+    String method,
+    String path, {
+    Object? body,
+    String? token,
+    bool adminAuth = true,
+    Duration timeout = _defaultTimeout,
+  }) async {
+    final uri = Uri.parse('$kApiBase$path');
+    final bearer = token ?? (adminAuth ? authToken : null);
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (bearer != null && bearer.isNotEmpty) 'Authorization': 'Bearer $bearer',
+    };
+
+    http.Response res;
+    try {
+      final encoded = body == null ? null : jsonEncode(body);
+      final Future<http.Response> req;
+      switch (method) {
+        case 'GET':
+          req = http.get(uri, headers: headers);
+          break;
+        case 'DELETE':
+          req = http.delete(uri, headers: headers, body: encoded);
+          break;
+        default:
+          req = http.post(uri, headers: headers, body: encoded);
+      }
+      res = await req.timeout(timeout);
+    } on TimeoutException {
+      throw NetworkException('The server took too long to respond. Please try again.');
+    } catch (_) {
+      throw NetworkException('Could not reach the server. Check your connection and try again.');
+    }
+
+    Map<String, dynamic> decoded;
+    try {
+      final d = jsonDecode(res.body);
+      decoded = d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{'data': d};
+    } catch (_) {
+      decoded = <String, dynamic>{};
+    }
+
+    final r = _Resp(res.statusCode, decoded);
+    if (res.statusCode == 401 && adminAuth && token == null) {
+      throw SessionExpired();
+    }
+    return r;
+  }
+
+  static String _dataUrl(String b64) =>
+      b64.startsWith('data:') ? b64 : 'data:image/jpeg;base64,$b64';
+
+  static Map<String, dynamic> _m(dynamic v) =>
+      v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+  static int? _i(dynamic v) => v is num ? v.toInt() : null;
+  static num? _n(dynamic v) => v is num ? v : null;
+  static String? _s(dynamic v) {
+    if (v == null) return null;
+    final s = v.toString().trim();
+    return s.isEmpty ? null : s;
+  }
+
+  // ---------------------------------------------------------------- auth
+
+  /// `POST /auth/login`. Throws [ApiException] with the server message on failure.
+  /// Role checks are the caller's job.
+  static Future<LoginPayload> login(String email, String password) async {
+    final r = await _send(
+      'POST',
+      '/auth/login',
+      body: {'email': email.trim(), 'password': password},
+      adminAuth: false,
+    );
+    final token = _s(r.body['token']);
+    if (!r.ok || token == null) {
+      throw ApiException(r.message('Incorrect email or password.'), statusCode: r.status);
+    }
+    return LoginPayload(token: token, user: _m(r.body['user']));
+  }
+
+  // ---------------------------------------------------------------- scan
+
+  static const _legacyActions = {
+    'in': 'punch_in',
+    'out': 'punch_out',
+    'break': 'break_start',
+    'break_in': 'break_start',
+    'break_out': 'break_end',
+  };
+
+  /// Face scan → punch/break via `POST /admin/face-kiosk/scan`.
+  /// [action] is 'auto' | 'punch_in' | 'punch_out' | 'break_start' | 'break_end'.
   static Future<ScanResult> scanAttendance({
     required String imageBase64,
     required String action,
-    required double gpsLat,
-    required double gpsLon,
-    String address = '',
-    String area = '',
-    String city = '',
-    String pincode = '',
+    required double? latitude,
+    required double? longitude,
+    double? accuracy,
+    String? locationName,
   }) async {
-    // 1. Resolve WHO via the face backend (biometric match) + get their EHRMS token.
-    http.Response resolveRes;
-    try {
-      resolveRes = await http.post(
-        Uri.parse('$kBackendUrl/attendance/resolve-face'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'image_base64': imageBase64}),
-      );
-      if (resolveRes.statusCode == 404) {
-        resolveRes = await http.post(
-          Uri.parse('$kBackendUrl/attendance/verify-identity'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'image_base64': imageBase64}),
-        );
-      }
-    } catch (e) {
-      throw ApiException('Could not reach face recognition server ($e)');
-    }
-
-    Map<String, dynamic> rdata;
-    try {
-      rdata = jsonDecode(resolveRes.body) as Map<String, dynamic>;
-    } catch (_) {
-      rdata = {};
-    }
-
-    if (resolveRes.statusCode == 200 && (rdata['linked'] == true || rdata['verified'] == true)) {
-      // 2. Punch/break straight against EHRMS (uat.ektahr.com/api) from the app.
-      final face = FaceResolve.fromJson(rdata);
-      return EhrmsDirect(face).punch(
-        requestedAction: action,
-        latitude: gpsLat,
-        longitude: gpsLon,
-        selfie: imageBase64,
-        address: address,
-        area: area,
-        city: city,
-        pincode: pincode,
-      );
-    }
-    final detailMsg = (rdata['detail'] ?? rdata['message'] ?? rdata['reason'] ?? 'Face not recognized. Align your face inside the guide.').toString();
-    throw ApiException(detailMsg);
-  }
-
-  static Future<void> addEmployee({
-    required String id,
-    required String fullName,
-    required String department,
-    required String designation,
-    required String phone,
-    required String email,
-  }) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/register-mobile'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'id': id,
-        'full_name': fullName,
-        'department': department,
-        'designation': designation,
-        'phone_number': phone,
-        'email': email,
-      }),
-    );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Failed to register employee.');
-    }
-  }
-
-  static Future<void> enrollFace({required String employeeId, required String imageBase64}) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/enroll-face-mobile'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'employee_id': employeeId,
-        'image_base64': imageBase64,
-      }),
+    final act = _legacyActions[action] ?? action;
+    final r = await _send(
+      'POST',
+      '/admin/face-kiosk/scan',
+      body: {
+        'image': _dataUrl(imageBase64),
+        'action': act,
+        'latitude': ?latitude,
+        'longitude': ?longitude,
+        'accuracy': ?accuracy,
+        if (locationName != null && locationName.trim().isNotEmpty) 'locationName': locationName.trim(),
+      },
+      timeout: _faceTimeout,
     );
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Error connecting to server.');
+    if (!r.ok) {
+      final reason = r.reason ?? (r.status == 503 ? 'engine_unavailable' : null);
+      var fallback = 'Face not recognized. Align your face inside the guide.';
+      if (reason == 'no_face') fallback = 'No face detected. Align your face inside the guide.';
+      if (reason == 'engine_unavailable') fallback = 'Face recognition is temporarily unavailable. Please try again.';
+      throw ApiException(r.message(fallback), statusCode: r.status, reason: reason);
     }
+    return _mapScan(r.body);
   }
 
-  /// One month of attendance + break details for a linked employee (from EHRMS).
-  /// [year] full year, [month] 1-12; omit for the current month.
-  static Future<MonthAttendance> fetchEhrmsMonth({
-    required String employeeId,
-    int? year,
-    int? month,
-  }) async {
-    final now = DateTime.now();
-    final y = year ?? now.year;
-    final m = month ?? now.month;
-    final uri = Uri.parse(
-        '$kBackendUrl/employees/$employeeId/ehrms-month?year=$y&month=$m');
-    final response = await http.get(uri);
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(
-          data['detail']?.toString() ?? 'Could not load monthly attendance.');
-    }
-    return MonthAttendance.fromJson(data);
-  }
+  static ScanResult _mapScan(Map<String, dynamic> b) {
+    final action = (b['action'] ?? '').toString();
+    final staff = _m(b['staff']);
+    final state = _m(b['state']);
+    final result = _m(b['result']);
+    final options = (b['options'] is List)
+        ? (b['options'] as List).map((e) => e.toString()).toList()
+        : <String>[];
 
-  static Future<DashboardStats> fetchMetrics() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/employees/metrics'));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load dashboard metrics.');
+    String label;
+    switch (action) {
+      case 'punch_in':
+        label = 'Check-In';
+        break;
+      case 'punch_out':
+        label = 'Check-Out';
+        break;
+      case 'break_start':
+        label = 'Break-In';
+        break;
+      case 'break_end':
+        label = 'Break-Out';
+        break;
+      case 'choose':
+        label = options.contains('break_end') ? 'On-Break-Scan' : 'Already-Checked-In';
+        break;
+      case 'completed':
+        label = 'Punch-Completed';
+        break;
+      default:
+        label = 'Punch-Completed';
     }
-    return DashboardStats.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
 
-  /// Enrolled faces + their EHRMS link status (drives the link picker).
-  static Future<List<EnrolledFace>> fetchEnrolledFaces() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/employees/list'));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load enrolled faces.');
+    final lateMinutes = action == 'punch_in' ? _i(result['lateMinutes']) : null;
+    final earlyMinutes = action == 'punch_out' ? _i(result['earlyExitMinutes']) : null;
+
+    String status = 'Present';
+    if (action == 'punch_in' && (lateMinutes ?? 0) > 0) status = 'Punched Late';
+    if (action == 'punch_out' && (earlyMinutes ?? 0) > 0) status = 'Punched Out Early';
+
+    num? fine;
+    if (action == 'punch_in') {
+      fine = _n(result['totalFine']) ?? _n(result['lateFineAmount']);
+    } else if (action == 'punch_out') {
+      fine = _n(result['totalFine']) ?? _n(result['earlyExitFineAmount']);
+    } else if (action == 'break_end') {
+      // Only the fine for exceeding the break allowance belongs on a break result.
+      fine = _n(result['breakFineAmount']);
     }
-    final List<dynamic> list = jsonDecode(response.body) as List<dynamic>;
-    return list.map((e) => EnrolledFace.fromJson(e as Map<String, dynamic>)).toList();
-  }
 
-  /// Dev EHRMS employee directory (admin-scoped, via the backend service account).
-  static Future<List<DevEmployee>> fetchDevDirectory() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/employees/dev-directory'));
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Could not load dev employee directory.');
+    int? breakTotal, breakAllowed, breakRemaining;
+    bool breakOver = false;
+    String? notice;
+    if (action == 'break_start') {
+      breakTotal = _i(result['usedMinutes']);
+      breakAllowed = _i(result['allowedMinutes']);
+      breakRemaining = _i(result['remainingMinutes']);
+    } else if (action == 'break_end') {
+      breakTotal = _i(result['totalBreakMinutes']) ?? _i(result['usedMinutes']);
+      breakAllowed = _i(result['allowedMinutes']);
+      breakRemaining = _i(result['remainingMinutes']);
+      breakOver = (_i(result['excessMinutes']) ?? 0) > 0;
+      if (breakOver) notice = _s(result['message']) ?? _s(b['message']);
     }
-    final list = (data['employees'] as List<dynamic>? ?? []);
-    return list.map((e) => DevEmployee.fromJson(e as Map<String, dynamic>)).toList();
-  }
+    if (breakAllowed == 0) {
+      breakAllowed = null;
+      breakRemaining = null;
+    }
 
-  /// Link an enrolled face to an EHRMS account (logs into EHRMS, stores the token).
-  static Future<void> linkEhrms({
-    required String employeeId,
-    required String email,
-    required String password,
-  }) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/link-ehrms'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'employee_id': employeeId, 'ehrms_email': email, 'ehrms_password': password}),
+    final conf = b['confidence'];
+    return ScanResult(
+      employeeId: (staff['id'] ?? staff['_id'] ?? '').toString(),
+      employeeCode: _s(staff['employeeId']),
+      employeeName: (staff['name'] ?? '').toString(),
+      department: _s(staff['department']),
+      action: label,
+      status: status,
+      confidence: conf is num ? conf.toDouble() : 0.0,
+      checkInTime: _s(result['checkInTime']) ?? _s(state['checkInTime']),
+      checkOutTime: _s(result['checkOutTime']) ?? _s(state['checkOutTime']),
+      breakTotalMin: breakTotal,
+      breakAllowedMin: breakAllowed,
+      breakRemainingMin: breakRemaining,
+      breakOver: breakOver,
+      notice: notice,
+      lateMinutes: lateMinutes,
+      earlyMinutes: earlyMinutes,
+      fineAmount: fine,
+      options: options,
     );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Could not link to EHRMS.');
-    }
   }
 
-  /// Enroll + link in one step. With [imageBase64] (live capture) it enrolls from that
-  /// face (A). Without it, the backend enrolls from the staff's EHRMS punch selfie (B);
-  /// if none is usable it throws [NeedsLiveCapture]. Returns the enrolled employee name.
-  static Future<String> enrollAndLink({
-    required String email,
-    required String password,
-    String? imageBase64,
-  }) async {
-    final body = <String, dynamic>{'ehrms_email': email, 'ehrms_password': password};
-    if (imageBase64 != null && imageBase64.isNotEmpty) body['image_base64'] = imageBase64;
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/enroll-and-link'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode == 200) {
-      return (data['employee_name'] ?? data['employee_id'] ?? 'employee').toString();
-    }
-    if (response.statusCode == 422 && data['needs_live_capture'] == true) {
-      throw NeedsLiveCapture(data['detail']?.toString() ?? 'A live photo is required to enroll.');
-    }
-    throw ApiException(data['detail']?.toString() ?? 'Enroll + link failed.');
-  }
+  // ---------------------------------------------------------------- enrollment
 
-  /// Kiosk self-enrollment for an UNRECOGNIZED person. They authenticate with their
-  /// EHRMS email+password; the live capture(s) are registered as their canonical face
-  /// in EHRMS (the store the kiosk identifies against). The backend rejects a face that
-  /// already belongs to another user. Returns the enrolled employee name.
-  /// Throws [NeedsLiveCapture] when no face was detected (retry the capture).
-  static Future<String> kioskEnroll({
+  /// Employee self-enroll at the kiosk: the EMPLOYEE signs in with their own
+  /// account (proves identity), then their live captures are registered via
+  /// `POST /staff/face/enroll` with THEIR token. Nothing is stored. Returns the
+  /// employee name. Throws [NeedsLiveCapture] when the capture was unusable.
+  static Future<String> selfEnroll({
     required String email,
     required String password,
     required List<String> images,
   }) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/kiosk-enroll'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'ehrms_email': email,
-        'ehrms_password': password,
-        'image_base64': images,
-      }),
+    final who = await login(email, password);
+    if (!who.isStaff) {
+      throw ApiException('Use your employee account to register your face.');
+    }
+
+    final r = await _send(
+      'POST',
+      '/staff/face/enroll',
+      body: {'selfies': images.map(_dataUrl).toList()},
+      token: who.token,
+      adminAuth: false,
+      timeout: _faceTimeout,
     );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode == 200) {
-      return (data['employee_name'] ?? data['employee_id'] ?? 'employee').toString();
-    }
-    if (response.statusCode == 422 && data['needs_live_capture'] == true) {
-      throw NeedsLiveCapture(data['detail']?.toString() ?? 'No face detected. Please try again.');
-    }
-    throw ApiException(data['detail']?.toString() ?? 'Enrollment failed.');
+    if (r.ok) return who.name.isNotEmpty ? who.name : 'employee';
+    _throwEnrollError(r, 'Enrollment failed. Please try again.');
   }
 
-  /// Clear a staff member's enrolled face + profile image (canonical, in EHRMS) so
-  /// they can re-enroll. Identified by [employeeId] (external HR id). Requires
-  /// [adminEmail]/[adminPassword] — the backend re-verifies them as an Admin / Super
-  /// Admin before clearing. After this the employee drops out of recognition until
-  /// they enroll again.
-  static Future<void> clearEnrolledFace({
-    required String employeeId,
-    String? email,
-    required String adminEmail,
-    required String adminPassword,
-  }) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/clear-face'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'employee_id': employeeId,
-        if (email != null && email.isNotEmpty) 'email': email,
-        'admin_email': adminEmail,
-        'admin_password': adminPassword,
-      }),
+  /// Admin enroll from the Admin Panel: `POST /admin/face-kiosk/enroll`.
+  /// Returns the server message.
+  static Future<String> adminEnroll({required String staffId, required List<String> images}) async {
+    final r = await _send(
+      'POST',
+      '/admin/face-kiosk/enroll',
+      body: {'staffId': staffId, 'images': images.map(_dataUrl).toList()},
+      timeout: _faceTimeout,
     );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Could not clear enrolled face.');
-    }
+    if (r.ok) return r.message('Face registered successfully.');
+    _throwEnrollError(r, 'Enrollment failed. Please try again.');
   }
 
-  /// Add the live punch face as another enrollment sample (continuous, interlinked
-  /// enrollment → robust recognition, no daily re-link). Fire-and-forget / best-effort.
-  static Future<void> addFaceSample({required String employeeId, required String imageBase64}) async {
-    try {
-      await http.post(
-        Uri.parse('$kBackendUrl/employees/add-face-sample'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'employee_id': employeeId, 'image_base64': imageBase64}),
+  static Never _throwEnrollError(_Resp r, String fallback) {
+    if (r.status == 422) {
+      throw NeedsLiveCapture(r.message('No usable face was captured. Please try again.'));
+    }
+    if (r.status == 503) {
+      throw ApiException(
+        r.message('Face recognition is temporarily unavailable. Please try again.'),
+        statusCode: 503,
+        reason: 'engine_unavailable',
       );
-    } catch (_) {/* best-effort; never affects the punch */}
+    }
+    throw ApiException(r.message(fallback), statusCode: r.status, reason: r.reason);
   }
 
-  /// Bulk: enroll+link every dev directory employee sharing the password (default: the
-  /// backend's configured dev password). Returns {total, linked, failed, results}.
-  static Future<Map<String, dynamic>> linkAllDev({String? password}) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/link-all-dev'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(password != null ? {'password': password} : {}),
-    );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Bulk link failed.');
-    }
-    return data;
-  }
+  // ---------------------------------------------------------------- roster
 
-  /// Remove an EHRMS link (reverts that face to local-only attendance).
-  static Future<void> unlinkEhrms(String employeeId) async {
-    final response = await http.post(
-      Uri.parse('$kBackendUrl/employees/unlink-ehrms'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'employee_id': employeeId}),
-    );
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Could not unlink.');
-    }
-  }
-
-  /// Live EHRMS attendance snapshot for all linked employees (single source of truth).
-  static Future<EhrmsOverview> fetchEhrmsOverview() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/attendance/ehrms-overview'));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load EHRMS attendance.');
-    }
-    return EhrmsOverview.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  /// EHRMS-enrolled employees for the dashboard (proxied to EHRMS).
-  static Future<List<EnrolledEmployee>> fetchEnrolledEmployees() async {
-    final response = await http
-        .get(Uri.parse('$kBackendUrl/employees/enrolled'))
-        .timeout(const Duration(seconds: 25));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load enrolled employees.');
-    }
-    final body = jsonDecode(response.body) as Map<String, dynamic>;
-    return (body['employees'] as List<dynamic>? ?? [])
-        .whereType<Map<String, dynamic>>()
-        .map(EnrolledEmployee.fromJson)
+  /// Company employees (deactivated excluded) with their face-registration flag.
+  static Future<List<EnrolledEmployee>> fetchKioskStaff({String? query}) async {
+    final q = (query ?? '').trim();
+    final path = q.isEmpty
+        ? '/admin/face-kiosk/staff'
+        : '/admin/face-kiosk/staff?q=${Uri.encodeQueryComponent(q)}';
+    final r = await _send('GET', path);
+    if (!r.ok) throw ApiException(r.message('Could not load employees.'), statusCode: r.status);
+    final list = r.body['data'] is List ? r.body['data'] as List : const [];
+    return list
+        .whereType<Map>()
+        .map((e) => EnrolledEmployee.fromJson(Map<String, dynamic>.from(e)))
         .toList();
   }
 
-  /// Full detail (profile + today + month) for one enrolled employee.
-  static Future<EmployeeDetail> fetchEmployeeDetail(String employeeId) async {
-    final response = await http
-        .get(Uri.parse('$kBackendUrl/employees/${Uri.encodeComponent(employeeId)}/detail'))
-        .timeout(const Duration(seconds: 25));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load employee detail.');
-    }
-    return EmployeeDetail.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  /// Employees with a registered face (dashboard / registry).
+  static Future<List<EnrolledEmployee>> fetchEnrolledEmployees() async {
+    final all = await fetchKioskStaff();
+    return all.where((e) => e.enrolled).toList();
   }
 
-  static Future<List<AttendanceRecord>> fetchAttendanceRecords() async {
-    final response = await http.get(Uri.parse('$kBackendUrl/attendance/records'));
-    if (response.statusCode != 200) {
-      throw ApiException('Could not load attendance records.');
-    }
-    final List<dynamic> records = jsonDecode(response.body) as List<dynamic>;
-    return records.map((r) => AttendanceRecord.fromJson(r as Map<String, dynamic>)).toList();
+  /// Profile + face registration + today's state for one employee.
+  static Future<EmployeeDetail> fetchEmployeeDetail(String staffId) async {
+    final r = await _send('GET', '/admin/face-kiosk/staff/${Uri.encodeComponent(staffId)}');
+    if (!r.ok) throw ApiException(r.message('Could not load employee detail.'), statusCode: r.status);
+    return EmployeeDetail.fromJson(_m(r.body['data']));
   }
 
-  static Future<List<EnrolledUser>> fetchRegistry() async {
-    final records = await fetchAttendanceRecords();
-    final seen = <String>{};
-    final users = <EnrolledUser>[];
-    for (final r in records) {
-      if (!seen.contains(r.employeeId)) {
-        seen.add(r.employeeId);
-        users.add(EnrolledUser(
-          id: r.id.isNotEmpty ? r.id : r.employeeId,
-          name: r.employeeName,
-          date: '${r.timestamp.day}/${r.timestamp.month}/${r.timestamp.year}',
-          punches: records.where((log) => log.employeeId == r.employeeId).length,
-        ));
-      }
-    }
-    return users;
-  }
-
-  static Future<void> deleteEmployee({required String employeeId, required String id}) async {
-    final response = await http.delete(
-      Uri.parse('$kBackendUrl/employees/delete'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'employeeId': employeeId, 'id': id}),
-    );
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    if (response.statusCode != 200) {
-      throw ApiException(data['detail']?.toString() ?? 'Could not delete user.');
-    }
+  /// Clear an employee's registered face so they can enroll again.
+  /// Callers must re-verify the admin password first.
+  static Future<String> resetFace(String staffId) async {
+    final r = await _send('DELETE', '/admin/face-recognition/${Uri.encodeComponent(staffId)}');
+    if (!r.ok) throw ApiException(r.message('Could not reset the face.'), statusCode: r.status);
+    return r.message('Face registration reset.');
   }
 }

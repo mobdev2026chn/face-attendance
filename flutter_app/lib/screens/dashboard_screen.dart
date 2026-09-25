@@ -5,11 +5,12 @@ import 'package:flutter/material.dart';
 import '../models/employee_directory.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
+import '../utils/session.dart';
 import 'employee_detail_screen.dart';
 
-/// Dashboard: the EHRMS-enrolled employee roster. Tapping a row opens the full
-/// detail (profile + today + this month's attendance). All data is pulled live from
-/// EHRMS — there is no local kiosk store and no linking anymore.
+/// Dashboard: the face-enrolled employee roster (HRMS). Tapping a row opens the
+/// detail (profile + today). All data is pulled live from HRMS
+/// `GET /admin/face-kiosk/staff` — there is no local kiosk store.
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -25,12 +26,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    _future = ApiService.fetchEnrolledEmployees();
+    _future = guardSession(context, ApiService.fetchEnrolledEmployees());
   }
 
   void _refresh() => setState(() {
     _displayedCount = 15;
-    _future = ApiService.fetchEnrolledEmployees();
+    _future = guardSession(context, ApiService.fetchEnrolledEmployees());
   });
 
   @override
@@ -58,7 +59,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         e.name.toLowerCase().contains(q) ||
                         (e.email ?? '').toLowerCase().contains(q) ||
                         (e.department ?? '').toLowerCase().contains(q) ||
-                        e.employeeId.toLowerCase().contains(q))
+                        e.employeeId.toLowerCase().contains(q) ||
+                        (e.hrEmployeeId ?? '').toLowerCase().contains(q))
                     .toList();
 
             return ListView(
@@ -79,7 +81,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   }),
                 ),
                 const SizedBox(height: 18),
-                const Text('ENROLLED EMPLOYEES · EHRMS',
+                const Text('ENROLLED EMPLOYEES · HRMS',
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.textMuted, letterSpacing: 1)),
                 const SizedBox(height: 12),
                 if (waiting)
@@ -87,7 +89,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 else if (snap.hasError)
                   _emptyOrError('Could not load employees.', retry: true)
                 else if (all.isEmpty)
-                  _emptyOrError('No one has enrolled their face in EHRMS yet.')
+                  _emptyOrError('No one has enrolled their face yet.')
                 else if (list.isEmpty)
                   _emptyOrError('No matching employees.')
                 else ...[
@@ -142,7 +144,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const Icon(Icons.cloud_done, size: 16, color: AppColors.primary),
           const SizedBox(width: 8),
           const Expanded(
-            child: Text('Live from EHRMS · enrolled employees',
+            child: Text('Live from HRMS · enrolled employees',
                 style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: AppColors.primary)),
           ),
           Container(
@@ -155,7 +157,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  /// Today's per-day, user-wise attendance snapshot (live from EHRMS): how many
+  /// Today's per-day, user-wise attendance snapshot (live from HRMS): how many
   /// enrolled employees are present, late, currently on break, and have taken a
   /// permission today. Counts are derived from the enrolled roster itself, so the
   /// card and the list below always agree.
@@ -218,7 +220,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _tile(EnrolledEmployee e) {
     final img = _avatar(e.avatar);
-    final subtitle = [e.designation, e.department].where((s) => s != null && s.isNotEmpty).join(' · ');
+    final subtitle = [e.hrEmployeeId, e.designation, e.department].where((s) => s != null && s.isNotEmpty).join(' · ');
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
@@ -239,7 +241,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         title: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
         subtitle: Text(
-          subtitle.isNotEmpty ? subtitle : (e.email ?? 'ID: ${e.employeeId}'),
+          subtitle.isNotEmpty ? subtitle : (e.email ?? ''),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 12, color: AppColors.textMuted),

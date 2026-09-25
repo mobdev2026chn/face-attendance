@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -7,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../main.dart';
 import '../config/selfie_orientation.dart';
@@ -18,6 +18,7 @@ import '../utils/avatar_orientation.dart';
 import '../utils/face_detection_helper.dart';
 import '../utils/feedback_sound.dart';
 import '../utils/selfie_normalize.dart';
+import '../utils/session.dart';
 import '../widgets/app_drawer.dart';
 import '../widgets/face_guide_overlay.dart';
 
@@ -44,13 +45,13 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
   String _guidanceText = 'Align Face Inside Guide';
 
   String _locationStr = 'Detecting location...';
-  double _gpsLat = 13.0827;
-  double _gpsLon = 80.2707;
-  // Full reverse-geocoded address sent with each punch (stored on the EHRMS record).
+  // No made-up default: without a real GPS fix nothing is sent, and the server
+  // answers 'GPS location is required' instead of judging a fake position.
+  double? _gpsLat;
+  double? _gpsLon;
+  double? _gpsAccuracy;
+  // Full reverse-geocoded address sent with each punch as `locationName`.
   String _address = '';
-  String _area = '';
-  String _city = '';
-  String _pincode = '';
 
   ScanResult? _recognizedEmployee;
   String? _lastCapturedImageBase64;
@@ -180,6 +181,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       );
       _gpsLat = position.latitude;
       _gpsLon = position.longitude;
+      _gpsAccuracy = position.accuracy;
 
       final placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
       if (placemarks.isNotEmpty) {
@@ -196,9 +198,6 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
 
         final full = parts.join(', ');
         _address = full;
-        _area = (p.subLocality != null && p.subLocality!.isNotEmpty) ? p.subLocality! : (p.subAdministrativeArea ?? '');
-        _city = p.locality ?? '';
-        _pincode = p.postalCode ?? '';
         setState(() {
           _locationStr = full.isNotEmpty ? full : '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
         });
@@ -303,12 +302,10 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       final result = await ApiService.scanAttendance(
         imageBase64: imageBase64,
         action: 'auto',
-        gpsLat: _gpsLat,
-        gpsLon: _gpsLon,
-        address: _address,
-        area: _area,
-        city: _city,
-        pincode: _pincode,
+        latitude: _gpsLat,
+        longitude: _gpsLon,
+        accuracy: _gpsAccuracy,
+        locationName: _address,
       );
 
       _lastCapturedImageBase64 = imageBase64;
@@ -339,18 +336,28 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       FeedbackSound.success();
       _notifyBreakPolicy(result);
       _notifyPunchPolicy(result);
-      _addFaceSample(result, imageBase64);
 
       Future.delayed(const Duration(seconds: 5), () {
         if (!mounted) return;
         setState(() => _recognizedEmployee = null);
         _resetScannerState();
       });
+    } on SessionExpired {
+      _scanTimer?.cancel();
+      if (mounted) await handleSessionExpired(context);
+    } on NetworkException {
+      FeedbackSound.error();
+      if (mounted) {
+        setState(() {
+          _guidanceText = 'Connection Error. Retrying...';
+          _cameraLocked = false;
+          _scanSuccessful = false;
+        });
+      }
     } on ApiException catch (e) {
-      // No kiosk enroll/link anymore. An unrecognized face just means the person
-      // isn't enrolled in EHRMS yet — they enroll in the EHRMS app (or their first
-      // punch there); the kiosk only identifies against EHRMS's enrolled faces.
-      _applyErrorGuidance(e.message);
+      // An unrecognized face surfaces the "Enroll Your Face" prompt (employee
+      // self-enroll with their own HRMS account).
+      _applyErrorGuidance(e.message, reason: e.reason);
     } catch (e) {
       FeedbackSound.error();
       setState(() {
@@ -363,16 +370,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     }
   }
 
-  /// After a real punch (in/out/break), add the live face as another enrollment sample
-  /// so recognition stays robust and the link survives day to day. Best-effort.
-  void _addFaceSample(ScanResult r, String? image) {
-    const writeActions = {'Check-In', 'Check-Out', 'Break-In', 'Break-Out'};
-    if (image == null || image == 'mock_test_face' || !writeActions.contains(r.action)) return;
-    if (r.employeeId.isEmpty) return;
-    ApiService.addFaceSample(employeeId: r.employeeId, imageBase64: image);
-  }
-
-  /// Notify the break policy per EHRMS after a break action (remaining/over-allowance).
+  /// Notify the break policy per HRMS after a break action (remaining/over-allowance).
   void _notifyBreakPolicy(ScanResult r) {
     if (r.action != 'Break-In' && r.action != 'Break-Out') return;
     // Prefer EHRMS's exact policy notice (disabled / no-allowance "...processed with
@@ -401,29 +399,6 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       }
     }
     final highlight = r.breakOver || hasNotice;
-    if (highlight) FeedbackSound.warn();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: highlight ? AppColors.danger : null,
-        duration: const Duration(seconds: 4),
-      ),
-    );
-  }
-
-  /// Notify the permission result after a kiosk Permission Out / In. EHRMS owns the
-  /// wording: Permission In returns "...exceeded by N minutes" (overrun fine) when the
-  /// employee was out longer than the approved custom window; otherwise it's neutral.
-  void _notifyPermissionAction(ScanResult r) {
-    if (r.action != 'Permission-Out' && r.action != 'Permission-In') return;
-    final notice = r.permissionNotice;
-    final hasNotice = notice != null && notice.trim().isNotEmpty;
-    final isOut = r.action == 'Permission-Out';
-    final msg = isOut
-        ? (hasNotice ? notice : 'Permission step-out recorded. Scan again to return.')
-        : (hasNotice ? notice : 'Permission return recorded.');
-    // Highlight only when EHRMS charged a fine (overrun beyond the approved time).
-    final highlight = hasNotice && notice.toLowerCase().contains('fine');
     if (highlight) FeedbackSound.warn();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -493,9 +468,13 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     }
   }
 
-  void _applyErrorGuidance(String errMsg) {
+  /// [reason] is the HRMS scan failure reason when sent (no_face, not_recognized,
+  /// inactive, blocked, geofence, already, engine_unavailable); it takes precedence
+  /// over message sniffing.
+  void _applyErrorGuidance(String errMsg, {String? reason}) {
     final lower = errMsg.toLowerCase();
-    final isNoFace = lower.contains('no face') || lower.contains('align your face');
+    final isNoFace = reason == 'no_face' ||
+        (reason == null && (lower.contains('no face') || lower.contains('align your face')));
     if (isNoFace) {
       // Idle / waiting state (same as HRMS app): keep calm primary color and guide prompt.
       // Do not beep, do not turn red.
@@ -511,19 +490,15 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
 
     _errorSoundThrottled();
 
-    final notRecognized = lower.contains('not recognized') ||
-        lower.contains('not_recognized') ||
-        lower.contains('not registered') ||
-        lower.contains('not enrolled') ||
-        lower.contains('not_enrolled') ||
-        lower.contains('unrecognized') ||
-        lower.contains('identity rejected') ||
-        lower.contains('no face enrolled') ||
-        lower.contains('unknown face') ||
-        lower.contains('no match');
+    final notRecognized = reason == 'not_recognized' ||
+        (reason == null && _looksUnrecognized(lower));
 
     String guidance;
-    if (lower.contains('off-center horizontally') || lower.contains('center horizontally')) {
+    if (reason == 'geofence' || reason == 'blocked' || reason == 'already' ||
+        reason == 'inactive' || reason == 'engine_unavailable') {
+      // Server policy refusals: show HRMS's explanation verbatim.
+      guidance = errMsg.isNotEmpty ? errMsg : 'Attendance could not be marked.';
+    } else if (lower.contains('off-center horizontally') || lower.contains('center horizontally')) {
       guidance = 'Align Center (Move Left/Right)';
     } else if (lower.contains('off-center vertically') || lower.contains('center vertically')) {
       guidance = 'Align Center (Move Up/Down)';
@@ -542,7 +517,23 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     } else {
       guidance = errMsg.isNotEmpty ? errMsg : 'Face Not Recognized. Retrying...';
     }
+    _showGuidanceError(guidance, notRecognized);
+  }
 
+  bool _looksUnrecognized(String lower) =>
+      lower.contains('not recognized') ||
+        lower.contains('not_recognized') ||
+        lower.contains('not registered') ||
+        lower.contains('not enrolled') ||
+        lower.contains('not_enrolled') ||
+        lower.contains('unrecognized') ||
+        lower.contains('identity rejected') ||
+        lower.contains('no face enrolled') ||
+        lower.contains('unknown face') ||
+        lower.contains('no match');
+
+  void _showGuidanceError(String guidance, bool notRecognized) {
+    if (!mounted) return;
     setState(() {
       _ovalColor = AppColors.danger;
       _guidanceText = guidance;
@@ -568,9 +559,10 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     }
   }
 
-  /// At-kiosk enrollment for an UNRECOGNIZED person. They sign in with their EHRMS
-  /// account (proving identity); the live capture registers their canonical face in
-  /// EHRMS. The backend refuses a face already enrolled to another user.
+  /// At-kiosk enrollment for an UNRECOGNIZED person. The EMPLOYEE signs in with
+  /// their own HRMS employee account (proving identity); the live captures are
+  /// registered as their face via `POST /staff/face/enroll`. Nothing is stored on
+  /// the kiosk. HRMS refuses a face already registered to another employee.
   Future<void> _startKioskEnroll() async {
     // Pause the live scan loop while enrolling. Clearing _notRecognized also
     // neutralizes any pending idle auto-recover timer from _applyErrorGuidance so it
@@ -581,11 +573,12 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
       _notRecognized = false;
     });
 
-    final creds = await _promptEhrmsCredentials();
+    final creds = await _promptEmployeeCredentials();
     if (creds == null) {
       if (mounted) _resetScannerState();
       return;
     }
+    if (!mounted) return;
 
     setState(() {
       _isLoading = true;
@@ -604,7 +597,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
         throw ApiException('Could not capture your face. Please try again.');
       }
 
-      final name = await ApiService.kioskEnroll(
+      final name = await ApiService.selfEnroll(
         email: creds.email,
         password: creds.password,
         images: samples,
@@ -623,6 +616,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
         if (mounted) _resetScannerState();
       });
     } on NeedsLiveCapture catch (e) {
+      // Unusable capture (no face / blurry / spoof) — ask them to try again.
       FeedbackSound.error();
       _showError(e.message);
       if (mounted) _resetScannerState();
@@ -639,14 +633,12 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     }
   }
 
-  /// Collect EHRMS credentials for at-kiosk enrollment. Returns null if cancelled.
-  Future<({String email, String password})?> _promptEhrmsCredentials() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedEmail = prefs.getString('admin_email') ?? '';
-    final savedPass = prefs.getString('admin_password') ?? '';
-    final emailC = TextEditingController(text: savedEmail);
-    final passC = TextEditingController(text: savedPass);
-    if (!mounted) return null;
+  /// Collect the EMPLOYEE's own account credentials for at-kiosk enrollment.
+  /// Always starts empty; the values are used once and never stored.
+  /// Returns null if cancelled.
+  Future<({String email, String password})?> _promptEmployeeCredentials() {
+    final emailC = TextEditingController();
+    final passC = TextEditingController();
     return showDialog<({String email, String password})>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -655,7 +647,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              "You're not enrolled yet. Sign in with your EHRMS account to register "
+              "You're not enrolled yet. Sign in with your employee account to register "
               'your face, then look at the camera.',
               style: TextStyle(fontSize: 13),
             ),
@@ -664,12 +656,14 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
               controller: emailC,
               keyboardType: TextInputType.emailAddress,
               autocorrect: false,
-              decoration: const InputDecoration(labelText: 'EHRMS email'),
+              decoration: const InputDecoration(labelText: 'Employee email'),
             ),
             const SizedBox(height: 6),
             TextField(
               controller: passC,
               obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
               decoration: const InputDecoration(labelText: 'Password'),
             ),
           ],
@@ -690,33 +684,38 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
     );
   }
 
+  /// Follow-up after a 'choose' result: re-scan the same image with the chosen
+  /// action (punch_out / break_start / break_end).
   Future<void> _handleSubsequentAction(String action, String successGuidance) async {
     if (_recognizedEmployee == null) return;
+    final image = _lastCapturedImageBase64;
+    if (image == null || image.isEmpty) return;
     setState(() => _isLoading = true);
     try {
       final result = await ApiService.scanAttendance(
-        imageBase64: _lastCapturedImageBase64 ?? 'mock_test_face',
+        imageBase64: image,
         action: action,
-        gpsLat: _gpsLat,
-        gpsLon: _gpsLon,
-        address: _address,
-        area: _area,
-        city: _city,
-        pincode: _pincode,
+        latitude: _gpsLat,
+        longitude: _gpsLon,
+        accuracy: _gpsAccuracy,
+        locationName: _address,
       );
+      if (!mounted) return;
       setState(() {
         _guidanceText = successGuidance;
         _recognizedEmployee = result;
       });
       FeedbackSound.success();
       _notifyBreakPolicy(result);
-      _notifyPermissionAction(result);
-      _addFaceSample(result, _lastCapturedImageBase64);
+      _notifyPunchPolicy(result);
       Future.delayed(const Duration(seconds: 5), () {
         if (!mounted) return;
         setState(() => _recognizedEmployee = null);
         _resetScannerState();
       });
+    } on SessionExpired {
+      _scanTimer?.cancel();
+      if (mounted) await handleSessionExpired(context);
     } on ApiException catch (e) {
       FeedbackSound.error();
       _showError(e.message);
@@ -1071,7 +1070,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(employee.employeeName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.textDark)),
-                    Text('ID: ${employee.employeeId}', style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                    Text('ID: ${employee.employeeCode ?? employee.employeeId}',style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
                     if (employee.department != null) Text('Dept: ${employee.department}', style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
                     const SizedBox(height: 8),
                     Container(
@@ -1105,18 +1104,23 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
               ),
             ],
           ),
-          // Fine banner — wording driven by EHRMS's per-day shift calc (late/early
+          // Fine banner — wording driven by HRMS's per-day shift calc (late/early
           // minutes + total fine amount), never a hardcoded shift time.
           Builder(builder: (_) {
             final late = employee.lateMinutes ?? 0;
             final early = employee.earlyMinutes ?? 0;
             final fine = (employee.fineAmount ?? 0).toDouble();
-            final showBanner = isLateOrEarly || late > 0 || early > 0 || fine > 0;
+            final isBreak = employee.action == 'Break-In' || employee.action == 'Break-Out';
+            final showBanner = isBreak
+                ? employee.breakOver
+                : (isLateOrEarly || late > 0 || early > 0 || fine > 0);
             if (!showBanner) return const SizedBox.shrink();
             final parts = <String>[];
             if (late > 0) parts.add('PUNCHED LATE BY $late MIN');
             if (early > 0) parts.add('PUNCHED OUT EARLY BY $early MIN');
-            if (parts.isEmpty) {
+            if (isBreak) {
+              parts.add('BREAK ALLOWANCE EXCEEDED');
+            } else if (parts.isEmpty) {
               parts.add(employee.status.toLowerCase().contains('late')
                   ? 'PUNCHED LATE'
                   : 'PUNCHED OUT EARLY');
@@ -1179,44 +1183,29 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
             ]);
           }),
           if (employee.action == 'Already-Checked-In') ...[
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _isLoading ? null : () => _handleSubsequentAction('break_in', 'BREAK MARKED SUCCESSFUL'),
-                    child: const Text('Take a Break'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-                    onPressed: _isLoading ? null : () => _handleSubsequentAction('out', 'PUNCH OUT SUCCESSFUL'),
-                    child: const Text('Punch Out'),
-                  ),
-                ),
-              ],
-            ),
-            // Custom-permission step-out / return — shown only when the employee has
-            // an actionable permission for today (created in the EHRMS app). EHRMS
-            // fines any time beyond the approved window on Permission In.
-            if (employee.permissionPhase == 'out' || employee.permissionPhase == 'in') ...[
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _isLoading
-                      ? null
-                      : () => _handleSubsequentAction(
-                            employee.permissionPhase == 'out' ? 'permission_out' : 'permission_in',
-                            employee.permissionPhase == 'out'
-                                ? 'PERMISSION OUT RECORDED'
-                                : 'PERMISSION IN RECORDED',
-                          ),
-                  icon: const Icon(Icons.meeting_room_outlined, size: 18),
-                  label: Text(employee.permissionPhase == 'out' ? 'Permission Out' : 'Permission In'),
-                ),
+            // Only offer what HRMS allows right now (scan `options`).
+            if (employee.options.contains('break_start') || employee.options.contains('punch_out')) ...[
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  if (employee.options.contains('break_start'))
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _isLoading ? null : () => _handleSubsequentAction('break_start', 'BREAK MARKED SUCCESSFUL'),
+                        child: const Text('Take a Break'),
+                      ),
+                    ),
+                  if (employee.options.contains('break_start') && employee.options.contains('punch_out'))
+                    const SizedBox(width: 10),
+                  if (employee.options.contains('punch_out'))
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                        onPressed: _isLoading ? null : () => _handleSubsequentAction('punch_out', 'PUNCH OUT SUCCESSFUL'),
+                        child: const Text('Punch Out'),
+                      ),
+                    ),
+                ],
               ),
             ],
           ],
@@ -1224,7 +1213,7 @@ class _ScannerScreenState extends State<ScannerScreen> with RouteAware, WidgetsB
             const SizedBox(height: 14),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-              onPressed: _isLoading ? null : () => _handleSubsequentAction('break_out', 'BREAK ENDED SUCCESSFUL'),
+              onPressed: _isLoading ? null : () => _handleSubsequentAction('break_end', 'BREAK ENDED SUCCESSFUL'),
               child: const Text('End Break'),
             ),
           ],

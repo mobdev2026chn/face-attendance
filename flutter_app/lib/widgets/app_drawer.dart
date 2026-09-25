@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 
 class AppDrawer extends StatelessWidget {
@@ -90,8 +92,10 @@ class AppDrawer extends StatelessWidget {
         actions: [
           TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Stay Logged In')),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
+              final appState = dialogContext.read<AppState>();
               Navigator.of(dialogContext).pop(); // close the dialog
+              await appState.logout(); // drop the token + saved admin identity
               navigator.pushNamedAndRemoveUntil('/login', (route) => false);
             },
             child: const Text('Log Out', style: TextStyle(color: AppColors.danger)),

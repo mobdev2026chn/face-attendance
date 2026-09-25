@@ -1,5 +1,3 @@
-// Face-recognition biometric engine base URL
-const String kBackendUrl = 'https://eface.askeva.io/api';
-
-// The EHRMS backend the app punches/breaks against DIRECTLY (single source of truth).
-const String kEhrmsBaseUrl = 'https://uat.ektahr.com';
+// HRMS backend (single source of truth). The kiosk talks ONLY to this API:
+// admin login, face scan/punch, enrollment, employee roster and face reset.
+const String kApiBase = 'https://uat.ektahr.com/api';

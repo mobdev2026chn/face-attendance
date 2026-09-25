@@ -1,11 +1,17 @@
+/// Outcome of one kiosk face scan, mapped from HRMS `POST /admin/face-kiosk/scan`
+/// (see ApiService.scanAttendance) into the action/status strings the scanner UI uses.
 class ScanResult {
+  /// HRMS staff id (Mongo `_id`) — used for detail / face reset.
   final String employeeId;
+
+  /// HR employee code shown to people (staff.employeeId), when set.
+  final String? employeeCode;
   final String employeeName;
   final String? department;
   final String? profilePhoto;
   final String? profilePhotoIso; // enrollment time — decides legacy 180° flip
   final String action; // Check-In, Check-Out, Break-In, Break-Out, Already-Checked-In, On-Break-Scan, Punch-Completed
-  final String status; // Present, Punched Late, Punched Out Early, etc.
+  final String status; // Present, Punched Late, Punched Out Early
   final double confidence;
   final String? checkInTime;
   final String? checkOutTime;
@@ -15,36 +21,33 @@ class ScanResult {
   final int? breakRemainingMin;
   final bool breakOver;
   final bool breakUnlimited;
-  /// Exact EHRMS policy notice for the action (break disabled / no-allowance
-  /// "...processed with Fine", or "Allocated break time exceeded by N minutes.").
-  /// null when there is no notice. Shown verbatim — EHRMS is the source of truth.
+
+  /// Exact HRMS policy notice for the action (e.g. break allowance exceeded).
+  /// null when there is no notice. Shown verbatim — HRMS is the source of truth.
   final String? notice;
-  // Fine snapshot from the EHRMS punch response (single source of truth). Always
-  // based on the shift allocated for that day — never hardcoded at the kiosk.
+  // Fine snapshot from the HRMS punch response. Always based on the shift
+  // allocated for that day — never hardcoded at the kiosk.
   final int? lateMinutes;
   final int? earlyMinutes;
-  final num? fineAmount; // total day fine (late + early + break + permission)
-  // Overtime snapshot (set on punch-out). overtimeNotice carries EHRMS's exact
-  // "Overtime is disabled for you." / "Overtime is not configured. Contact HR."
-  // wording, or empty when eligible.
+  final num? fineAmount;
+  // Overtime snapshot (not returned by the HRMS kiosk scan; kept for the UI).
   final int? overtimeMinutes;
   final num? overtimeAmount;
   final String? overtimeNotice;
-  /// Exact EHRMS permission policy notice ("Permission is not configured..." /
-  /// "...exceeded by N minutes"), when the punch response carries one.
-  final String? permissionNotice;
 
-  /// Today's actionable CUSTOM permission (type "both") for the recognized,
-  /// punched-in employee, used to offer Permission Out / In at the kiosk:
-  ///   permissionPhase == 'out' → stepped-out not yet recorded (show "Permission Out")
-  ///   permissionPhase == 'in'  → out recorded, return pending (show "Permission In")
-  ///   null                     → no actionable permission today.
-  /// [permissionId] is the PermissionRequest id the out/in action stamps.
+  /// Permission policy notice — permission is not handled by the kiosk anymore,
+  /// so these stay null.
+  final String? permissionNotice;
   final String? permissionId;
   final String? permissionPhase;
 
+  /// Follow-up actions the server offers after an 'Already-Checked-In' /
+  /// 'On-Break-Scan' result (HRMS scan `options`: punch_out / break_start / break_end).
+  final List<String> options;
+
   ScanResult({
     required this.employeeId,
+    this.employeeCode,
     required this.employeeName,
     this.department,
     this.profilePhoto,
@@ -69,34 +72,6 @@ class ScanResult {
     this.permissionNotice,
     this.permissionId,
     this.permissionPhase,
+    this.options = const [],
   });
-
-  factory ScanResult.fromJson(Map<String, dynamic> json) {
-    return ScanResult(
-      employeeId: (json['employee_id'] ?? '').toString(),
-      employeeName: (json['employee_name'] ?? '').toString(),
-      department: json['department']?.toString(),
-      profilePhoto: json['profile_photo']?.toString(),
-      profilePhotoIso: json['profile_photo_iso']?.toString(),
-      action: (json['action'] ?? '').toString(),
-      status: (json['status'] ?? '').toString(),
-      confidence: (json['confidence'] is num) ? (json['confidence'] as num).toDouble() : 0.0,
-      checkInTime: json['check_in_time']?.toString(),
-      checkOutTime: json['check_out_time']?.toString(),
-      notice: (json['notice'] is String && (json['notice'] as String).trim().isNotEmpty)
-          ? json['notice'] as String
-          : null,
-      lateMinutes: (json['late_minutes'] is num) ? (json['late_minutes'] as num).toInt() : null,
-      earlyMinutes: (json['early_minutes'] is num) ? (json['early_minutes'] as num).toInt() : null,
-      fineAmount: (json['fine_amount'] is num) ? json['fine_amount'] as num : null,
-      overtimeMinutes: (json['overtime_minutes'] is num) ? (json['overtime_minutes'] as num).toInt() : null,
-      overtimeAmount: (json['overtime_amount'] is num) ? json['overtime_amount'] as num : null,
-      overtimeNotice: (json['overtime_notice'] is String && (json['overtime_notice'] as String).trim().isNotEmpty)
-          ? json['overtime_notice'] as String
-          : null,
-      permissionNotice: (json['permission_notice'] is String && (json['permission_notice'] as String).trim().isNotEmpty)
-          ? json['permission_notice'] as String
-          : null,
-    );
-  }
 }

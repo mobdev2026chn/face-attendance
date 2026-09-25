@@ -1,14 +1,30 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
+import '../models/employee_directory.dart';
 import '../services/api_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/selfie_normalize.dart';
+import '../utils/session.dart';
 import '../widgets/face_guide_overlay.dart';
 
+String _fmtDate(String? iso) {
+  if (iso == null || iso.isEmpty) return '-';
+  final dt = DateTime.tryParse(iso);
+  if (dt == null) return iso;
+  final l = dt.toLocal();
+  return '${l.day}/${l.month}/${l.year}';
+}
+
+/// Admin Panel (reached through the admin-password gate):
+///  * Enroll User — pick a company employee and register their face
+///    (`POST /admin/face-kiosk/enroll`).
+///  * Registry — enrolled employees, with a face reset
+///    (`DELETE /admin/face-recognition/:staffId`).
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
 
@@ -70,39 +86,41 @@ class _EnrollUserTab extends StatefulWidget {
 }
 
 class _EnrollUserTabState extends State<_EnrollUserTab> {
-  final _idController = TextEditingController();
-  final _nameController = TextEditingController();
-  final _deptController = TextEditingController();
-  final _designationController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _emailController = TextEditingController();
+  final _searchController = TextEditingController();
+  Timer? _debounce;
+  late Future<List<EnrolledEmployee>> _future;
+  EnrolledEmployee? _selected;
+
   bool _isScanning = false;
   bool _isLoading = false;
   CameraController? _cameraController;
 
   @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  @override
   void dispose() {
+    _debounce?.cancel();
     _cameraController?.dispose();
-    _idController.dispose();
-    _nameController.dispose();
-    _deptController.dispose();
-    _designationController.dispose();
-    _phoneController.dispose();
-    _emailController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
-  bool get _formValid =>
-      _idController.text.trim().isNotEmpty &&
-      _nameController.text.trim().isNotEmpty &&
-      _deptController.text.trim().isNotEmpty &&
-      _designationController.text.trim().isNotEmpty &&
-      _phoneController.text.trim().isNotEmpty &&
-      _emailController.text.trim().isNotEmpty;
+  Future<List<EnrolledEmployee>> _load() =>
+      guardSession(context, ApiService.fetchKioskStaff(query: _searchController.text));
+
+  void _onSearchChanged(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) setState(() => _future = _load());
+    });
+  }
 
   Future<void> _startScanning() async {
-    // The employee record is created by the enroll-face-mobile endpoint on capture,
-    // so here we only open the camera and move into the guided scan view.
+    if (_selected == null) return;
     try {
       final cameras = await availableCameras();
       final frontCamera = cameras.firstWhere(
@@ -142,62 +160,166 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
     }
   }
 
-  Future<void> _captureAndSave() async {
+  Future<String?> _captureSample() async {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
+    if (controller == null || !controller.value.isInitialized) return null;
+    final file = await controller.takePicture();
+    final Uint8List bytes = await file.readAsBytes();
+    final Uint8List upright = await normalizeSelfieUpright(bytes);
+    return base64Encode(upright);
+  }
+
+  Future<void> _captureAndSave() async {
+    final staff = _selected;
+    final controller = _cameraController;
+    if (staff == null || controller == null || !controller.value.isInitialized) return;
     setState(() => _isLoading = true);
 
     try {
-      final file = await controller.takePicture();
-      final Uint8List bytes = await file.readAsBytes();
-      final Uint8List upright = await normalizeSelfieUpright(bytes);
-      final imageBase64 = base64Encode(upright);
+      // Two fresh upright samples for a robust enrollment.
+      final samples = <String>[];
+      for (var i = 0; i < 2; i++) {
+        final img = await _captureSample();
+        if (img != null) samples.add(img);
+        if (i == 0) await Future.delayed(const Duration(milliseconds: 350));
+      }
+      if (samples.isEmpty) {
+        throw NeedsLiveCapture('Could not capture the face. Please try again.');
+      }
 
-      await ApiService.enrollFace(employeeId: _idController.text.trim(), imageBase64: imageBase64);
+      final message = await ApiService.adminEnroll(staffId: staff.employeeId, images: samples);
 
       if (!mounted) return;
       showDialog(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text('Success'),
-          content: Text('Face registered successfully for "${_idController.text.trim()}"!\nBiometrics encrypted & saved.'),
+          content: Text('${staff.name}: $message'),
           actions: [
             TextButton(
               onPressed: () {
-                Navigator.of(context).pop();
-                _reset();
+                Navigator.of(dialogContext).pop();
+                _reset(clearSelection: true);
               },
               child: const Text('OK'),
             ),
           ],
         ),
       );
+    } on SessionExpired {
+      if (mounted) await handleSessionExpired(context);
+    } on NeedsLiveCapture catch (e) {
+      _showAlert('Retake Needed', e.message);
+    } on NetworkException catch (e) {
+      _showAlert('Connection Error', e.message);
     } on ApiException catch (e) {
       _showAlert('Enrollment Failed', e.message);
     } catch (e) {
-      _showAlert('Connection Error', 'Could not connect to the server. Please check your IP address.');
+      _showAlert('Enrollment Failed', 'Could not capture or upload the face. Please try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _reset() {
-    _cameraController?.dispose();
+  void _reset({bool clearSelection = false}) {
+    final controller = _cameraController;
     setState(() {
       _cameraController = null;
       _isScanning = false;
-      _idController.clear();
+      if (clearSelection) {
+        _selected = null;
+        _future = _load();
+      }
     });
+    controller?.dispose();
   }
 
   void _showAlert(String title, String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(title),
         content: Text(message),
-        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        actions: [TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('OK'))],
       ),
+    );
+  }
+
+  Widget _employeeList() {
+    return FutureBuilder<List<EnrolledEmployee>>(
+      future: _future,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+        }
+        if (snap.hasError) {
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  snap.error is ApiException ? (snap.error as ApiException).message : 'Could not load employees.',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: AppColors.textMuted),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton(onPressed: () => setState(() => _future = _load()), child: const Text('Retry')),
+              ],
+            ),
+          );
+        }
+        final list = snap.data ?? const <EnrolledEmployee>[];
+        if (list.isEmpty) {
+          return const Center(child: Text('No matching employees.', style: TextStyle(color: AppColors.textMuted)));
+        }
+        return ListView.separated(
+          padding: const EdgeInsets.only(top: 4, bottom: 8),
+          itemCount: list.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 6),
+          itemBuilder: (context, index) {
+            final e = list[index];
+            final selected = _selected?.employeeId == e.employeeId;
+            final subtitle = e.enrolled
+                ? 'Reset face first'
+                : [e.hrEmployeeId, e.department].where((s) => s != null && s.isNotEmpty).join(' · ');
+            return Material(
+              color: selected ? AppColors.primary.withValues(alpha: 0.08) : Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              child: ListTile(
+                enabled: !e.enrolled,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(color: selected ? AppColors.primary : AppColors.border),
+                ),
+                dense: true,
+                leading: CircleAvatar(
+                  radius: 18,
+                  backgroundColor: e.enrolled ? AppColors.textMuted : AppColors.primary,
+                  child: Text(e.name.isNotEmpty ? e.name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
+                ),
+                title: Text(e.name, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                subtitle: subtitle.isEmpty
+                    ? null
+                    : Text(subtitle, style: const TextStyle(fontSize: 11.5, color: AppColors.textMuted)),
+                trailing: e.enrolled
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.success.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Text('ENROLLED',
+                            style: TextStyle(color: AppColors.success, fontSize: 10, fontWeight: FontWeight.w800)),
+                      )
+                    : (selected ? const Icon(Icons.check_circle, color: AppColors.primary) : null),
+                onTap: e.enrolled ? null : () => setState(() => _selected = e),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -207,11 +329,11 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
       return Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 20),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(24),
@@ -220,36 +342,33 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text('ENTER EMPLOYEE USERNAME/ID', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.textMuted, letterSpacing: 1)),
+                  const Text('SELECT EMPLOYEE', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.textMuted, letterSpacing: 1)),
                   const SizedBox(height: 8),
                   TextField(
-                    controller: _idController,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(hintText: 'e.g. Elena Smith'),
-                    onChanged: (_) => setState(() {}),
+                    controller: _searchController,
+                    decoration: const InputDecoration(hintText: 'Search name, ID, email…', prefixIcon: Icon(Icons.search)),
+                    onChanged: _onSearchChanged,
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 16),
                   ElevatedButton(
-                    onPressed: _idController.text.trim().isEmpty ? null : _startScanning,
+                    onPressed: _selected == null ? null : _startScanning,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
-                    child: const Text('Proceed to Scan', style: TextStyle(fontWeight: FontWeight.w800)),
+                    child: Text(
+                      _selected == null ? 'Proceed to Scan' : 'Proceed to Scan · ${_selected!.name}',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 30),
-            const Text('Registration Lock', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textDark)),
-            const SizedBox(height: 8),
-            const Text(
-              "Please enter the employee's name above to proceed to guided biometric scan.",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-            ),
+            const SizedBox(height: 14),
+            Expanded(child: _employeeList()),
           ],
         ),
       );
@@ -260,6 +379,7 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
       return const Center(child: CircularProgressIndicator(color: AppColors.primary));
     }
 
+    final staff = _selected;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -294,7 +414,9 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
                   children: [
                     const Text('ENROLLING BIOMETRIC PROFILE', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1)),
                     const SizedBox(height: 4),
-                    Text('ID: ${_idController.text.trim()}', style: const TextStyle(color: AppColors.primary, fontSize: 16, fontWeight: FontWeight.w800)),
+                    Text(staff?.name ?? '', style: const TextStyle(color: AppColors.primary, fontSize: 16, fontWeight: FontWeight.w800)),
+                    if ((staff?.hrEmployeeId ?? '').isNotEmpty)
+                      Text('ID: ${staff!.hrEmployeeId}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   ],
                 ),
               ),
@@ -324,14 +446,14 @@ class _EnrollUserTabState extends State<_EnrollUserTab> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
-                        onPressed: _isLoading ? null : _reset,
+                        onPressed: _isLoading ? null : () => _reset(),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
-                        child: const Text('← Change Name', style: TextStyle(fontWeight: FontWeight.w800)),
+                        child: const Text('← Change Employee', style: TextStyle(fontWeight: FontWeight.w800)),
                       ),
                     ),
                   ],
@@ -354,46 +476,63 @@ class _RegistryTab extends StatefulWidget {
 }
 
 class _RegistryTabState extends State<_RegistryTab> {
-  late Future<List<EnrolledUser>> _future;
+  late Future<List<EnrolledEmployee>> _future;
+  final Set<String> _resetting = <String>{};
 
   @override
   void initState() {
     super.initState();
-    _future = ApiService.fetchRegistry();
+    _future = guardSession(context, ApiService.fetchEnrolledEmployees());
   }
 
   void _refresh() {
-    setState(() => _future = ApiService.fetchRegistry());
+    setState(() => _future = guardSession(context, ApiService.fetchEnrolledEmployees()));
   }
 
-  Future<void> _delete(EnrolledUser user) async {
+  /// Clear this employee's registered face. The admin already re-verified their
+  /// password at the Admin Panel gate, so only a confirmation is asked here.
+  Future<void> _resetFace(EnrolledEmployee user) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirm Deletion'),
-        content: Text('Are you sure you want to permanently delete "${user.name}"?\nThis action cannot be undone!'),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Reset Face'),
+        content: Text(
+          'Remove the registered face for "${user.name}"?\n\n'
+          'They will no longer be recognized at the kiosk until their face is enrolled '
+          'again. Attendance history is not affected.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete User', style: TextStyle(color: AppColors.danger))),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Reset Face', style: TextStyle(color: AppColors.danger)),
+          ),
         ],
       ),
     );
 
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
+    setState(() => _resetting.add(user.employeeId));
     try {
-      await ApiService.deleteEmployee(employeeId: user.name, id: user.id);
+      final message = await ApiService.resetFace(user.employeeId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${user.name}: $message')));
       _refresh();
+    } on SessionExpired {
+      if (mounted) await handleSessionExpired(context);
     } on ApiException catch (e) {
       if (!mounted) return;
       showDialog(
         context: context,
-        builder: (_) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text('Error'),
           content: Text(e.message),
-          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+          actions: [TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('OK'))],
         ),
       );
+    } finally {
+      if (mounted) setState(() => _resetting.remove(user.employeeId));
     }
   }
 
@@ -401,7 +540,7 @@ class _RegistryTabState extends State<_RegistryTab> {
   Widget build(BuildContext context) {
     return RefreshIndicator(
       onRefresh: () async => _refresh(),
-      child: FutureBuilder<List<EnrolledUser>>(
+      child: FutureBuilder<List<EnrolledEmployee>>(
         future: _future,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -421,7 +560,7 @@ class _RegistryTabState extends State<_RegistryTab> {
             return ListView(
               children: const [
                 SizedBox(height: 100),
-                Center(child: Text('No users registered in database.', style: TextStyle(color: AppColors.textMuted))),
+                Center(child: Text('No faces enrolled yet.', style: TextStyle(color: AppColors.textMuted))),
               ],
             );
           }
@@ -431,6 +570,11 @@ class _RegistryTabState extends State<_RegistryTab> {
             itemCount: users.length,
             itemBuilder: (context, index) {
               final user = users[index];
+              final busy = _resetting.contains(user.employeeId);
+              final meta = <String>[
+                if ((user.hrEmployeeId ?? '').isNotEmpty) 'ID: ${user.hrEmployeeId}',
+                'Enrolled: ${_fmtDate(user.enrolledAt)}',
+              ].join(' | ');
               return Container(
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.all(14),
@@ -447,15 +591,20 @@ class _RegistryTabState extends State<_RegistryTab> {
                         children: [
                           Text(user.name, style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
                           const SizedBox(height: 2),
-                          Text('Enrolled: ${user.date} | Punches: ${user.punches}', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                          Text(meta, style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
                         ],
                       ),
                     ),
-                    TextButton(
-                      onPressed: () => _delete(user),
-                      style: TextButton.styleFrom(foregroundColor: AppColors.danger),
-                      child: const Text('Remove'),
-                    ),
+                    busy
+                        ? const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 16),
+                            child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.danger)),
+                          )
+                        : TextButton(
+                            onPressed: () => _resetFace(user),
+                            style: TextButton.styleFrom(foregroundColor: AppColors.danger),
+                            child: const Text('Reset face'),
+                          ),
                   ],
                 ),
               );

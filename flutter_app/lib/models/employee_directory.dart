@@ -1,7 +1,21 @@
-/// One EHRMS-enrolled employee, as listed on the face-app dashboard.
-/// Backed by GET /api/employees/enrolled (proxied to EHRMS kiosk-enrolled).
+int? _intOrNull(dynamic v) => v is num ? v.toInt() : null;
+
+String? _strOrNull(dynamic v) {
+  if (v == null) return null;
+  final s = v.toString().trim();
+  return s.isEmpty ? null : s;
+}
+
+Map<String, dynamic> _map(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+
+/// One company employee as returned by HRMS `GET /admin/face-kiosk/staff`.
+/// Used by the dashboard (enrolled ones only) and the admin enroll picker.
 class EnrolledEmployee {
+  /// HRMS staff id (Mongo `_id`) — used to open detail / enroll / reset.
   final String employeeId;
+
+  /// HR employee code (staff.employeeId) shown to people, when set.
+  final String? hrEmployeeId;
   final String name;
   final String? email;
   final String? department;
@@ -9,6 +23,7 @@ class EnrolledEmployee {
   final String? avatar;
   final String? enrolledAt;
   final String? status;
+  final bool enrolled;
   // Today's live attendance snapshot (per-user) — drives the dashboard summary card.
   final bool presentToday;
   final bool lateToday;
@@ -17,6 +32,7 @@ class EnrolledEmployee {
 
   EnrolledEmployee({
     required this.employeeId,
+    this.hrEmployeeId,
     required this.name,
     this.email,
     this.department,
@@ -24,200 +40,104 @@ class EnrolledEmployee {
     this.avatar,
     this.enrolledAt,
     this.status,
+    this.enrolled = false,
     this.presentToday = false,
     this.lateToday = false,
     this.onBreak = false,
     this.permissionToday = false,
   });
 
-  factory EnrolledEmployee.fromJson(Map<String, dynamic> j) => EnrolledEmployee(
-        employeeId: (j['employee_id'] ?? '').toString(),
-        name: (j['name'] ?? '').toString(),
-        email: j['email']?.toString(),
-        department: j['department']?.toString(),
-        designation: j['designation']?.toString(),
-        avatar: j['avatar']?.toString(),
-        enrolledAt: j['enrolled_at']?.toString(),
-        status: j['status']?.toString(),
-        presentToday: j['present_today'] == true,
-        lateToday: j['late_today'] == true,
-        onBreak: j['on_break'] == true,
-        permissionToday: j['permission_today'] == true,
-      );
-}
-
-/// One break session within a day (start/end/duration/fine), shown when a day
-/// card is expanded in the detail screen.
-class BreakSession {
-  final String? start;
-  final String? end;
-  final int durationMin;
-  final int fineMin;
-  final double fine;
-
-  BreakSession({this.start, this.end, this.durationMin = 0, this.fineMin = 0, this.fine = 0});
-
-  factory BreakSession.fromJson(Map<String, dynamic> j) => BreakSession(
-        start: j['start']?.toString(),
-        end: j['end']?.toString(),
-        durationMin: j['duration_min'] is num ? (j['duration_min'] as num).toInt() : 0,
-        fineMin: j['fine_min'] is num ? (j['fine_min'] as num).toInt() : 0,
-        fine: j['fine'] is num ? (j['fine'] as num).toDouble() : 0,
-      );
-}
-
-/// Permission usage + fine for a day (custom step-outs / late-in / early-out).
-class PermissionDetail {
-  final int consumedMin;
-  final int approvedMin;
-  final int remainingMin;
-  final int lateMin;
-  final int earlyMin;
-  final int fineMin;
-  final double fineAmount;
-
-  PermissionDetail({
-    this.consumedMin = 0,
-    this.approvedMin = 0,
-    this.remainingMin = 0,
-    this.lateMin = 0,
-    this.earlyMin = 0,
-    this.fineMin = 0,
-    this.fineAmount = 0,
-  });
-
-  /// True when there's nothing meaningful to show for this day.
-  bool get isEmpty =>
-      consumedMin == 0 && approvedMin == 0 && lateMin == 0 && earlyMin == 0 && fineMin == 0 && fineAmount == 0;
-
-  factory PermissionDetail.fromJson(Map<String, dynamic> j) {
-    int i(dynamic v) => v is num ? v.toInt() : 0;
-    return PermissionDetail(
-      consumedMin: i(j['consumed_min']),
-      approvedMin: i(j['approved_min']),
-      remainingMin: i(j['remaining_min']),
-      lateMin: i(j['late_min']),
-      earlyMin: i(j['early_min']),
-      fineMin: i(j['fine_min']),
-      fineAmount: j['fine_amount'] is num ? (j['fine_amount'] as num).toDouble() : 0,
+  factory EnrolledEmployee.fromJson(Map<String, dynamic> j) {
+    final today = _map(j['today']);
+    return EnrolledEmployee(
+      employeeId: (j['id'] ?? j['_id'] ?? '').toString(),
+      hrEmployeeId: _strOrNull(j['employeeId']),
+      name: (j['name'] ?? '').toString(),
+      email: _strOrNull(j['email']),
+      department: _strOrNull(j['department']),
+      designation: _strOrNull(j['designation']),
+      avatar: null,
+      enrolledAt: _strOrNull(j['enrolledAt']),
+      enrolled: j['enrolled'] == true,
+      presentToday: today['checkInTime'] != null,
+      lateToday: false,
+      onBreak: today['onBreak'] == true,
+      permissionToday: false,
     );
   }
 }
 
-/// One attendance day row (today or a month entry) in the detail screen.
-class AttendanceRow {
-  final String? date;
-  final String? punchIn;
-  final String? punchOut;
-  final String? status;
-  final double? workHours;
-  final int breakMin;
-  final int breakCount;
-  final double breakFine;
-  final int breakFineMin;
-  final int lateMin;
-  final int earlyMin;
-  final double fine;
-  final double totalFine;
-  final List<BreakSession> breaks;
-  final PermissionDetail permission;
+/// Today's attendance state for one employee (HRMS kiosk `today` object).
+class KioskToday {
+  final bool punchedIn;
+  final bool punchedOut;
+  final String? checkInTime;
+  final String? checkOutTime;
+  final bool onBreak;
+  final bool canStartBreak;
+  final int? breakAllowedMin;
+  final int? breakUsedMin;
+  final int? breakRemainingMin;
+  final String? breakActiveSince;
 
-  AttendanceRow({
-    this.date,
-    this.punchIn,
-    this.punchOut,
-    this.status,
-    this.workHours,
-    this.breakMin = 0,
-    this.breakCount = 0,
-    this.breakFine = 0,
-    this.breakFineMin = 0,
-    this.lateMin = 0,
-    this.earlyMin = 0,
-    this.fine = 0,
-    this.totalFine = 0,
-    this.breaks = const [],
-    PermissionDetail? permission,
-  }) : permission = permission ?? PermissionDetail();
+  KioskToday({
+    this.punchedIn = false,
+    this.punchedOut = false,
+    this.checkInTime,
+    this.checkOutTime,
+    this.onBreak = false,
+    this.canStartBreak = false,
+    this.breakAllowedMin,
+    this.breakUsedMin,
+    this.breakRemainingMin,
+    this.breakActiveSince,
+  });
 
-  static int _i(dynamic v) => v is num ? v.toInt() : 0;
-  static double _d(dynamic v) => v is num ? v.toDouble() : 0;
+  /// Human status derived from the punch/break flags.
+  String get statusLabel {
+    if (punchedOut || checkOutTime != null) return 'Punched Out';
+    if (onBreak) return 'On Break';
+    if (punchedIn || checkInTime != null) return 'Punched In';
+    return 'Not Punched In';
+  }
 
-  factory AttendanceRow.fromJson(Map<String, dynamic> j) => AttendanceRow(
-        date: j['date']?.toString(),
-        punchIn: j['punch_in']?.toString(),
-        punchOut: j['punch_out']?.toString(),
-        status: j['status']?.toString(),
-        workHours: j['work_hours'] is num ? (j['work_hours'] as num).toDouble() : null,
-        breakMin: _i(j['break_min']),
-        breakCount: _i(j['break_count']),
-        breakFine: _d(j['break_fine']),
-        breakFineMin: _i(j['break_fine_min']),
-        lateMin: _i(j['late_min']),
-        earlyMin: _i(j['early_min']),
-        fine: _d(j['fine']),
-        totalFine: _d(j['total_fine']),
-        breaks: (j['breaks'] as List<dynamic>? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .map(BreakSession.fromJson)
-            .toList(),
-        permission: (j['permission'] is Map<String, dynamic>)
-            ? PermissionDetail.fromJson(j['permission'] as Map<String, dynamic>)
-            : null,
-      );
+  factory KioskToday.fromJson(Map<String, dynamic> j) {
+    final brk = _map(j['break']);
+    return KioskToday(
+      punchedIn: j['punchedIn'] == true,
+      punchedOut: j['punchedOut'] == true,
+      checkInTime: _strOrNull(j['checkInTime']),
+      checkOutTime: _strOrNull(j['checkOutTime']),
+      onBreak: j['onBreak'] == true,
+      canStartBreak: j['canStartBreak'] == true,
+      breakAllowedMin: _intOrNull(brk['allowedMinutes']),
+      breakUsedMin: _intOrNull(brk['usedMinutes']),
+      breakRemainingMin: _intOrNull(brk['remainingMinutes']),
+      breakActiveSince: _strOrNull(brk['activeSince']),
+    );
+  }
 }
 
-/// Month-to-date totals for breaks taken + fines.
-class MonthTotals {
-  final int breakMin;
-  final int breakCount;
-  final double breakFine;
-  final double fine;
-
-  MonthTotals({this.breakMin = 0, this.breakCount = 0, this.breakFine = 0, this.fine = 0});
-
-  factory MonthTotals.fromJson(Map<String, dynamic> j) => MonthTotals(
-        breakMin: j['break_min'] is num ? (j['break_min'] as num).toInt() : 0,
-        breakCount: j['break_count'] is num ? (j['break_count'] as num).toInt() : 0,
-        breakFine: j['break_fine'] is num ? (j['break_fine'] as num).toDouble() : 0,
-        fine: j['fine'] is num ? (j['fine'] as num).toDouble() : 0,
-      );
-}
-
-/// Full detail for one employee: profile + today + this month's attendance.
-/// Backed by GET /api/employees/:id/detail (proxied to EHRMS kiosk-employee).
+/// Detail for one employee: profile + face registration + today's state.
+/// Backed by HRMS `GET /admin/face-kiosk/staff/:staffId`. There is no monthly
+/// history on the kiosk (it lives in the HRMS web portal).
 class EmployeeDetail {
   final Map<String, dynamic> profile;
-  final AttendanceRow? today;
-  final List<AttendanceRow> month;
-  final int presentDays;
-  final String? monthLabel;
-  final MonthTotals totals;
+  final bool enrolled;
+  final int? samples;
+  final KioskToday? today;
 
-  EmployeeDetail({
-    required this.profile,
-    this.today,
-    this.month = const [],
-    this.presentDays = 0,
-    this.monthLabel,
-    MonthTotals? totals,
-  }) : totals = totals ?? MonthTotals();
+  EmployeeDetail({required this.profile, this.enrolled = false, this.samples, this.today});
 
-  String? get(String key) => profile[key]?.toString();
+  String? get(String key) => _strOrNull(profile[key]);
 
   factory EmployeeDetail.fromJson(Map<String, dynamic> j) {
     final t = j['today'];
-    final tot = j['totals'];
     return EmployeeDetail(
-      profile: (j['profile'] as Map<String, dynamic>?) ?? const {},
-      today: (t is Map<String, dynamic>) ? AttendanceRow.fromJson(t) : null,
-      month: (j['month'] as List<dynamic>? ?? [])
-          .whereType<Map<String, dynamic>>()
-          .map(AttendanceRow.fromJson)
-          .toList(),
-      presentDays: j['present_days'] is num ? (j['present_days'] as num).toInt() : 0,
-      monthLabel: j['month_label']?.toString(),
-      totals: (tot is Map<String, dynamic>) ? MonthTotals.fromJson(tot) : null,
+      profile: j,
+      enrolled: j['enrolled'] == true,
+      samples: _intOrNull(j['samples']),
+      today: t is Map ? KioskToday.fromJson(Map<String, dynamic>.from(t)) : null,
     );
   }
 }
